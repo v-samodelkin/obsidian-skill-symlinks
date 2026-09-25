@@ -26,7 +26,7 @@ export type Op =
 	| { kind: "remove"; link: string }
 	| { kind: "conflict"; link: string; reason: string };
 
-// Only folders that already exist are suggested.
+// Global skill folders per agent, as used by the `skills` CLI. Only folders that already exist are suggested.
 export const KNOWN_TARGETS = [
 	"~/.agents/skills",
 	"~/.claude/skills",
@@ -34,9 +34,10 @@ export const KNOWN_TARGETS = [
 	"~/.cursor/skills",
 	"~/.gemini/skills",
 	"~/.copilot/skills",
-	"~/.windsurf/skills",
+	"~/.codeium/windsurf/skills",
 	"~/.continue/skills",
 	"~/.config/opencode/skills",
+	"~/.config/agents/skills",
 ];
 
 export const expandHome = (p: string): string =>
