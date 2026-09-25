@@ -9,4 +9,6 @@ export default defineConfig([
 			parserOptions: { projectService: { allowDefaultProject: ["eslint.config.mjs", "esbuild.config.mjs"] } },
 		},
 	},
+	// node:test registers tests via returned promises that the runner awaits.
+	{ files: ["test/**"], rules: { "@typescript-eslint/no-floating-promises": "off" } },
 ]);
