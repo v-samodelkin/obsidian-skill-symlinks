@@ -26,20 +26,6 @@ export type Op =
 	| { kind: "remove"; link: string }
 	| { kind: "conflict"; link: string; reason: string };
 
-// Global skill folders per agent, as used by the `skills` CLI. Only folders that already exist are suggested.
-export const KNOWN_TARGETS = [
-	"~/.agents/skills",
-	"~/.claude/skills",
-	"~/.codex/skills",
-	"~/.cursor/skills",
-	"~/.gemini/skills",
-	"~/.copilot/skills",
-	"~/.codeium/windsurf/skills",
-	"~/.continue/skills",
-	"~/.config/opencode/skills",
-	"~/.config/agents/skills",
-];
-
 export const expandHome = (p: string): string =>
 	p === "~" || p.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p;
 
@@ -71,10 +57,8 @@ const linkDest = (link: string): string => path.resolve(path.dirname(link), fs.r
 
 export const targetExists = (target: string): boolean => isDir(expandHome(target));
 
-export const detectTargets = (): string[] => KNOWN_TARGETS.filter(targetExists);
-
-// Most agents also read ~/.agents/skills, so linking into their own folders too would list skills twice.
-// Claude Code is the exception: it reads only ~/.claude/skills.
+// Codex, Cursor, Copilot, Gemini CLI, OpenCode and most other agents read ~/.agents/skills;
+// Claude Code reads only ~/.claude/skills. Agents' own folders are left out: linking there too lists skills twice.
 export const DEFAULT_TARGETS = ["~/.agents/skills", "~/.claude/skills"];
 
 // Target path -> (skill name -> source folder), plus name clashes between groups.

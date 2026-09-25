@@ -1,6 +1,6 @@
 import { AbstractInputSuggest, App, Modal, PluginSettingTab, Setting, TFolder, normalizePath } from "obsidian";
 import type SkillSymlinksPlugin from "./main";
-import { Group, Op, Target, detectTargets, targetExists } from "./sync";
+import { DEFAULT_TARGETS, Group, Op, Target, targetExists } from "./sync";
 
 export interface Settings {
 	enabled: boolean;
@@ -96,12 +96,12 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Agent folders")
 			.setDesc(
-				"Folders that agents read skills from. Missing folders are skipped until they exist. Most agents read the shared agents folder, while Claude reads only its own. Adding an agent's own folder as well can make it list each skill twice.",
+				"The two default folders cover nearly every agent. Missing folders are skipped until they exist. Add another folder only for an agent that reads neither of them: an agent that reads two linked folders lists each skill twice.",
 			)
 			.setHeading();
 
 		for (const target of this.settings.targets) {
-			new Setting(containerEl)
+			const setting = new Setting(containerEl)
 				.setName(target.path)
 				.setDesc(targetExists(target.path) ? "" : "Not found, skipped.")
 				.addToggle((toggle) =>
@@ -109,8 +109,10 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 						target.enabled = value;
 						await this.save();
 					}),
-				)
-				.addExtraButton((button) =>
+				);
+			// Defaults can be turned off but stay listed, so they are never lost.
+			if (!DEFAULT_TARGETS.includes(target.path))
+				setting.addExtraButton((button) =>
 					button
 						.setIcon("trash")
 						.setTooltip("Remove and delete its links")
@@ -121,14 +123,6 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 							await this.save(true);
 						}),
 				);
-		}
-
-		const known = new Set(this.settings.targets.map((t) => t.path));
-		for (const path of detectTargets().filter((p) => !known.has(p))) {
-			new Setting(containerEl)
-				.setName(path)
-				.setDesc("Found on this device.")
-				.addButton((button) => button.setButtonText("Add").onClick(() => this.addTarget(path)));
 		}
 
 		let custom = "";
