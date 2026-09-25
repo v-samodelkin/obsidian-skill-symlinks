@@ -96,8 +96,7 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Agent folders")
 			.setDesc(
-				// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Claude Code" and paths are names, not prose.
-				"Folders that agents read skills from. Missing folders are skipped until they exist. Most agents read ~/.agents/skills, and Claude Code reads ~/.claude/skills. Adding an agent's own folder as well can make it list each skill twice.",
+				"Folders that agents read skills from. Missing folders are skipped until they exist. Most agents read the shared agents folder, while Claude reads only its own. Adding an agent's own folder as well can make it list each skill twice.",
 			)
 			.setHeading();
 
