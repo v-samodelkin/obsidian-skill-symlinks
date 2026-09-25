@@ -1,6 +1,6 @@
 import { FileSystemAdapter, Notice, Plugin, TAbstractFile, debounce } from "obsidian";
 import { DEFAULT_SETTINGS, Settings, SkillSymlinksSettingTab } from "./settings";
-import { Op, SyncConfig, Target, apply, detectTargets, plan, planRemoval } from "./sync";
+import { DEFAULT_TARGETS, Op, SyncConfig, Target, apply, plan, planRemoval, targetExists } from "./sync";
 
 export default class SkillSymlinksPlugin extends Plugin {
 	settings: Settings = DEFAULT_SETTINGS;
@@ -10,8 +10,9 @@ export default class SkillSymlinksPlugin extends Plugin {
 	async onload() {
 		const data = (await this.loadData()) as Partial<Settings> | null;
 		this.settings = { ...structuredClone(DEFAULT_SETTINGS), ...data };
-		// First run: suggest the agent folders that exist on this machine. Nothing is linked until sync is turned on.
-		if (!data) this.settings.targets = detectTargets().map((path) => ({ path, enabled: true }));
+		// First run: pick the shared defaults that exist here; other detected folders are offered in settings.
+		// Nothing is linked until sync is turned on.
+		if (!data) this.settings.targets = DEFAULT_TARGETS.filter(targetExists).map((path) => ({ path, enabled: true }));
 
 		this.addSettingTab(new SkillSymlinksSettingTab(this.app, this));
 		this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.sync(true) });

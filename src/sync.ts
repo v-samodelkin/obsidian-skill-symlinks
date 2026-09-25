@@ -73,6 +73,10 @@ export const targetExists = (target: string): boolean => isDir(expandHome(target
 
 export const detectTargets = (): string[] => KNOWN_TARGETS.filter(targetExists);
 
+// Most agents also read ~/.agents/skills, so linking into their own folders too would list skills twice.
+// Claude Code is the exception: it reads only ~/.claude/skills.
+export const DEFAULT_TARGETS = ["~/.agents/skills", "~/.claude/skills"];
+
 // Target path -> (skill name -> source folder), plus name clashes between groups.
 function desired(cfg: SyncConfig): { want: Map<string, Map<string, string>>; conflicts: Op[] } {
 	const root = path.join(cfg.vaultPath, cfg.skillsFolder);

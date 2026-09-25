@@ -10,9 +10,13 @@ vault/skills/claude-only/tdd/  →  ~/.claude/skills/tdd
 ## How it works
 
 - **Skills folder.** Each subfolder of the skills folder is a skill. By default a folder counts only once it contains `SKILL.md`.
-- **Agent folders.** The plugin finds the agent skill folders that exist on your device. You can add others. A missing folder is skipped until it exists.
+- **Agent folders.** By default the plugin links into `~/.agents/skills` and `~/.claude/skills`. It also lists other agent folders it finds on your device, and you can add any folder. A missing folder is skipped until it exists.
 - **Groups.** A group is a folder inside the skills folder whose subfolders are skills. For each group, and for the top level, choose which agent folders it links into.
 - **Live.** Creating, renaming or deleting a skill updates the links within a second. The plugin also syncs when Obsidian starts and when you close its settings.
+
+## Which agent folders
+
+Most agents (Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and others) read `~/.agents/skills`. Claude Code reads only `~/.claude/skills`. Some agents read several folders: Cursor and OpenCode also read `~/.claude/skills`, so with both defaults on they may list a skill twice. Add an agent's own folder, such as `~/.cursor/skills`, only if that agent does not read `~/.agents/skills`. To keep a group out of a folder, clear its checkbox under **Groups**.
 
 ## Safety
 
