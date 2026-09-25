@@ -1,0 +1,10 @@
+{
+  "id": "skill-symlinks",
+  "name": "Skill Symlinks",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.10",
+  "description": "Keep agent skills in your vault and link them into Claude Code, Codex, Cursor and other agent skill folders.",
+  "author": "Vitalii Samodelkin",
+  "authorUrl": "https://github.com/v-samodelkin",
+  "isDesktopOnly": true
+}

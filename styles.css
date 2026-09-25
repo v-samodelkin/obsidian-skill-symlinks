@@ -1,0 +1,18 @@
+.skill-symlinks-targets {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-1) var(--size-4-4);
+	margin-top: var(--size-4-2);
+}
+
+.skill-symlinks-targets label {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.skill-symlinks-preview {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	user-select: text;
+}
