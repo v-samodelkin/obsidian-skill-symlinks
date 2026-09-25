@@ -7,6 +7,10 @@ vault/skills/review/           →  ~/.claude/skills/review, ~/.agents/skills/re
 vault/skills/claude-only/tdd/  →  ~/.claude/skills/tdd
 ```
 
+## Install
+
+In Obsidian, open **Settings → Community plugins → Browse** and search for **Skill Symlinks**. Until it is listed there, install it with [BRAT](https://obsidian.md/plugins?id=obsidian42-brat) using `v-samodelkin/obsidian-skill-symlinks`.
+
 ## How it works
 
 - **Skills folder.** Each subfolder of the skills folder is a skill. By default a folder counts only once it contains `SKILL.md`.
