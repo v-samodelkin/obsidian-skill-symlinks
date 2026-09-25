@@ -1,6 +1,6 @@
 {
   "name": "obsidian-skill-symlinks",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Link agent skill folders from an Obsidian vault into Claude Code, Codex, Cursor and other agents.",
   "type": "module",
