@@ -9,7 +9,9 @@ vault/skills/claude-only/tdd/  →  ~/.claude/skills/tdd
 
 ## Install
 
-In Obsidian, open **Settings → Community plugins → Browse** and search for **Skill Symlinks**. Until it is listed there, install it with [BRAT](https://obsidian.md/plugins?id=obsidian42-brat) using `v-samodelkin/obsidian-skill-symlinks`.
+In Obsidian, open **Settings → Community plugins → Browse**, search for **Skill Symlinks**, then install and enable it.
+
+You can also install it with [BRAT](https://obsidian.md/plugins?id=obsidian42-brat) using `v-samodelkin/obsidian-skill-symlinks`.
 
 ## How it works
 
