@@ -1,6 +1,7 @@
-import { FileSystemAdapter, Notice, Plugin, TAbstractFile, debounce } from "obsidian";
+import { FileSystemAdapter, Notice, Plugin, TAbstractFile, TFolder, debounce } from "obsidian";
+import { affectsConfiguredFolders, followFolderRename } from "./rename";
 import { DEFAULT_SETTINGS, Settings, SkillSymlinksSettingTab } from "./settings";
-import { DEFAULT_TARGETS, Op, SyncConfig, Target, apply, plan, planRemoval } from "./sync";
+import { DEFAULT_TARGETS, Op, SyncConfig, Target, apply, collectManagedLinks, plan, planRemoval } from "./sync";
 
 export default class SkillSymlinksPlugin extends Plugin {
 	settings: Settings = DEFAULT_SETTINGS;
@@ -22,6 +23,11 @@ export default class SkillSymlinksPlugin extends Plugin {
 		});
 
 		const onChange = (file: TAbstractFile, oldPath?: string) => {
+			if (oldPath && file instanceof TFolder && followFolderRename(this.settings, oldPath, file.path)) {
+				void this.saveSettings();
+				this.requestSync();
+				return;
+			}
 			if (this.inSkillsFolder(file.path) || (oldPath && this.inSkillsFolder(oldPath))) this.requestSync();
 		};
 		this.app.workspace.onLayoutReady(() => {
@@ -70,6 +76,14 @@ export default class SkillSymlinksPlugin extends Plugin {
 
 	private run(ops: Op[], verbose: boolean) {
 		const { done, failed } = apply(ops);
+		const cfg = this.config();
+		if (cfg) {
+			const managed = collectManagedLinks(cfg);
+			if (JSON.stringify(managed) !== JSON.stringify(this.settings.managedLinks)) {
+				this.settings.managedLinks = managed;
+				void this.saveSettings();
+			}
+		}
 		const conflicts = ops.filter((op) => op.kind === "conflict");
 		const fresh = verbose ? conflicts : conflicts.filter((op) => !this.reportedConflicts.has(op.link));
 		fresh.forEach((op) => this.reportedConflicts.add(op.link));
@@ -82,7 +96,6 @@ export default class SkillSymlinksPlugin extends Plugin {
 	}
 
 	private inSkillsFolder(path: string): boolean {
-		const folder = this.settings.skillsFolder;
-		return !folder || path === folder || path.startsWith(folder + "/");
+		return affectsConfiguredFolders(this.settings, path);
 	}
 }
