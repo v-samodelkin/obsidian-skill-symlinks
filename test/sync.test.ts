@@ -251,6 +251,7 @@ test("Windows junctions accept equivalent vault path spellings", { skip: process
 		const variant = { ...cfg, vaultPath };
 		assert.deepEqual(plan(variant), [], vaultPath);
 		assert.equal(planRemoval(variant).length, 2, vaultPath);
+		assert.equal(Object.keys(collectManagedLinks(variant)).length, 2, vaultPath);
 	}
 });
 
@@ -265,4 +266,20 @@ test("Windows retains recorded junctions across target path spelling changes and
 	assert.deepEqual(sync().failed, []);
 	assert.equal(fs.realpathSync(path.join(agent("claude"), "a")), fs.realpathSync(path.join(moved, "skills/a")));
 	assert.deepEqual(plan(cfg), []);
+	cfg.managedLinks = collectManagedLinks(cfg);
+	assert.equal(Object.keys(cfg.managedLinks).length, 2);
+	assert.deepEqual(apply(planRemoval(cfg)).failed, []);
+	assert.deepEqual(collectManagedLinks(cfg), {});
+});
+
+test("does not claim a sibling vault with the same path prefix", () => {
+	skill("a");
+	const sibling = vault() + "-other";
+	fs.mkdirSync(path.join(sibling, "skills/a"), { recursive: true });
+	fs.symlinkSync(path.join(sibling, "skills/a"), path.join(agent("claude"), "a"), "junction");
+	const ops = plan(cfg);
+	assert.equal(ops.filter((op) => op.kind === "conflict").length, 1);
+	assert.equal(ops.filter((op) => op.kind === "remove").length, 0);
+	assert.deepEqual(collectManagedLinks(cfg), {});
+	assert.deepEqual(planRemoval(cfg), []);
 });
