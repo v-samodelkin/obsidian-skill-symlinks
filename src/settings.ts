@@ -8,6 +8,7 @@ export interface Settings {
 	requireSkillMd: boolean;
 	targets: Target[];
 	groups: Group[];
+	managedLinks: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -16,6 +17,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	requireSkillMd: true,
 	targets: [],
 	groups: [{ folder: "", skip: [] }],
+	managedLinks: {},
 };
 
 const folderPath = (value: string) => (value.trim() ? normalizePath(value.trim()) : "");

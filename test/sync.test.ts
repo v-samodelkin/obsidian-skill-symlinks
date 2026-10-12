@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, test } from "node:test";
-import { type SyncConfig, apply, plan, planRemoval } from "../src/sync.ts";
+import { type SyncConfig, apply, collectManagedLinks, plan, planRemoval } from "../src/sync.ts";
+import { affectsConfiguredFolders, affectsSkillsFolder, followFolderRename } from "../src/rename.ts";
 
 let tmp: string;
 let cfg: SyncConfig;
@@ -108,4 +109,124 @@ test("a group folder is not a skill even with SKILL.md", () => {
 	skill("claude-only/b");
 	sync();
 	assert.deepEqual(links("claude"), { b: "skills/claude-only/b" });
+});
+
+test("repairs tracked links after the vault is renamed and reopened", () => {
+	skill("a");
+	skill("claude-only/b");
+	sync();
+	// Existing links from 1.0.0 are recorded on the first 1.0.1 sync.
+	cfg.managedLinks = collectManagedLinks(cfg);
+	const movedVault = path.join(tmp, "renamed-vault");
+	fs.renameSync(vault(), movedVault);
+	cfg = { ...JSON.parse(JSON.stringify(cfg)) as SyncConfig, vaultPath: movedVault };
+	assert.deepEqual(sync().failed, []);
+	assert.equal(fs.realpathSync(path.join(agent("claude"), "a")), path.join(movedVault, "skills/a"));
+	assert.equal(fs.realpathSync(path.join(agent("claude"), "b")), path.join(movedVault, "skills/claude-only/b"));
+	assert.equal(fs.existsSync(path.join(agent("codex"), "b")), false);
+	assert.deepEqual(plan(cfg), []);
+});
+
+test("does not take over live links when a vault is copied", () => {
+	skill("a");
+	sync();
+	cfg.managedLinks = collectManagedLinks(cfg);
+	const copiedVault = path.join(tmp, "copied-vault");
+	fs.cpSync(vault(), copiedVault, { recursive: true });
+	cfg.vaultPath = copiedVault;
+	assert.ok(plan(cfg).every((op) => op.kind === "conflict"));
+	assert.equal(plan(cfg).length, 2);
+});
+
+test("preserves untracked broken links and links repointed by the user", () => {
+	skill("a");
+	sync();
+	cfg.managedLinks = collectManagedLinks(cfg);
+	const movedVault = path.join(tmp, "renamed-vault");
+	fs.renameSync(vault(), movedVault);
+	cfg.vaultPath = movedVault;
+	fs.unlinkSync(path.join(agent("claude"), "a"));
+	const foreign = path.join(tmp, "foreign-missing", "skills/a");
+	fs.symlinkSync(foreign, path.join(agent("claude"), "a"), "junction");
+	delete cfg.managedLinks[path.join(agent("codex"), "a")];
+	assert.equal(plan(cfg).length, 2);
+	assert.ok(plan(cfg).every((op) => op.kind === "conflict"));
+	sync();
+	assert.equal(fs.readlinkSync(path.join(agent("claude"), "a")), foreign);
+});
+
+test("keeps links while the adapter still points to an unavailable vault", () => {
+	skill("a");
+	sync();
+	cfg.managedLinks = collectManagedLinks(cfg);
+	fs.renameSync(vault(), path.join(tmp, "renamed-vault"));
+	assert.deepEqual(plan(cfg), []);
+	assert.deepEqual(collectManagedLinks(cfg), cfg.managedLinks);
+});
+
+test("retains ownership for unavailable targets and clears removed links", () => {
+	skill("a");
+	sync();
+	cfg.managedLinks = collectManagedLinks(cfg);
+	fs.renameSync(agent("claude"), agent("offline"));
+	assert.deepEqual(collectManagedLinks(cfg), cfg.managedLinks);
+	apply(planRemoval(cfg));
+	assert.deepEqual(collectManagedLinks(cfg), {
+		[path.join(agent("claude"), "a")]: path.join(vault(), "skills/a"),
+	});
+});
+
+test("follows skills root and ancestor renames, preserving group routing", () => {
+	skill("a");
+	skill("claude-only/b");
+	sync();
+	fs.mkdirSync(path.join(vault(), "old"));
+	fs.renameSync(path.join(vault(), "skills"), path.join(vault(), "old/skills"));
+	assert.equal(followFolderRename(cfg, "skills", "old/skills"), true);
+	sync();
+	fs.renameSync(path.join(vault(), "old"), path.join(vault(), "new"));
+	assert.equal(affectsSkillsFolder(cfg.skillsFolder, "old"), true);
+	assert.equal(followFolderRename(cfg, "old", "new"), true);
+	sync();
+	assert.equal(cfg.skillsFolder, "new/skills");
+	assert.deepEqual(links("claude"), { a: "new/skills/a", b: "new/skills/claude-only/b" });
+	assert.deepEqual(links("codex"), { a: "new/skills/a" });
+});
+
+test("follows group and group ancestor renames without changing exclusions", () => {
+	skill("claude-only/b");
+	sync();
+	fs.renameSync(path.join(vault(), "skills/claude-only"), path.join(vault(), "skills/private"));
+	assert.equal(followFolderRename(cfg, "skills/claude-only", "skills/private"), true);
+	sync();
+	assert.deepEqual(cfg.groups[1], { folder: "private", skip: [agent("codex")] });
+	assert.deepEqual(links("claude"), { b: "skills/private/b" });
+	assert.deepEqual(links("codex"), {});
+	cfg.groups[1].folder = "parent/private";
+	assert.equal(followFolderRename(cfg, "skills/parent", "skills/renamed"), true);
+	assert.equal(cfg.groups[1].folder, "renamed/private");
+});
+
+test("handles vault-root skills and ignores paths with only a shared prefix", () => {
+	cfg.skillsFolder = "";
+	cfg.groups[1].folder = "old/skills";
+	assert.equal(followFolderRename(cfg, "old", "new"), true);
+	assert.equal(cfg.skillsFolder, "");
+	assert.equal(cfg.groups[0].folder, "");
+	assert.equal(cfg.groups[1].folder, "new/skills");
+	assert.equal(followFolderRename(cfg, "newer", "other"), false);
+	assert.equal(affectsSkillsFolder("skills", "skills-other"), false);
+	assert.equal(affectsSkillsFolder("skills-other", "skills"), false);
+});
+
+test("continues watching a group moved elsewhere in the vault", () => {
+	skill("claude-only/b");
+	sync();
+	fs.renameSync(path.join(vault(), "skills/claude-only"), path.join(vault(), "private"));
+	followFolderRename(cfg, "skills/claude-only", "private");
+	sync();
+	assert.deepEqual(links("claude"), { b: "private/b" });
+	assert.deepEqual(links("codex"), {});
+	assert.equal(affectsConfiguredFolders(cfg, "private/b/SKILL.md"), true);
+	assert.equal(affectsConfiguredFolders(cfg, "unrelated/file.md"), false);
 });

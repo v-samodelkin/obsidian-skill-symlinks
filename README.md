@@ -17,6 +17,8 @@ In Obsidian, open **Settings → Community plugins → Browse** and search for *
 - **Agent folders.** Links go into `~/.agents/skills` and `~/.claude/skills`. You can turn either off or add another folder. A missing folder is skipped until it exists.
 - **Groups.** A group is a folder inside the skills folder whose subfolders are skills. For each group, and for the top level, choose which agent folders it links into.
 - **Live.** Creating, renaming or deleting a skill updates the links within a second. The plugin also syncs when Obsidian starts and when you close its settings.
+- **Folder renames.** Renaming or moving the skills folder, a group, or their parent folders inside the vault updates the saved paths and links. Group exclusions are preserved.
+- **Vault moves.** From 1.0.1, each sync records the exact links it manages. After you rename or move the vault and reopen it, sync repairs those links if their old destinations no longer exist. Run sync once before moving the vault. Links already broken before upgrading from 1.0.0 need manual repair because that version did not record their destinations.
 
 ## Which agent folders
 
@@ -27,7 +29,7 @@ Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and most other agents read `
 This plugin creates and deletes symlinks **outside your vault**.
 
 - Sync is off after install. Turning it on shows every link it will create or remove before anything is written.
-- It only removes symlinks that point into this vault. Real folders and other links in agent folders are left alone and reported as skipped.
+- It only removes symlinks that point into this vault, or recorded links whose old destinations no longer exist after a vault move. Live links to a copied vault, links repointed outside this vault, and untracked broken links are left alone. Real folders are never replaced.
 - It never deletes or moves files, in the vault or elsewhere.
 - **Remove all links created by this plugin** in the command palette removes its links and turns sync off. Run it before uninstalling.
 

@@ -19,6 +19,7 @@ export interface SyncConfig {
 	requireSkillMd: boolean;
 	targets: Target[];
 	groups: Group[];
+	managedLinks?: Record<string, string>; // last observed link -> source, persisted across vault moves
 }
 
 export type Op =
@@ -90,11 +91,15 @@ function desired(cfg: SyncConfig): { want: Map<string, Map<string, string>>; con
 	return { want, conflicts };
 }
 
-// Links pointing into this vault are ours; everything else in a target folder is left alone.
+// Links into this vault and recorded broken links from its old location are ours.
 // Disabled targets get an empty wish list, so their links are cleaned up.
 export function plan(cfg: SyncConfig): Op[] {
+	// The adapter may still refer to the old vault path until Obsidian reopens it.
+	if (!isDir(cfg.vaultPath)) return [];
 	const { want, conflicts } = desired(cfg);
-	const owned = (dest: string) => dest.startsWith(cfg.vaultPath + path.sep);
+	const owned = (link: string, dest: string) =>
+		dest.startsWith(cfg.vaultPath + path.sep) ||
+		(cfg.managedLinks?.[link] === dest && !fs.existsSync(dest));
 	const removes: Op[] = [];
 	const creates: Op[] = [];
 	for (const target of cfg.targets) {
@@ -105,18 +110,38 @@ export function plan(cfg: SyncConfig): Op[] {
 			const link = path.join(dir, name);
 			if (!lstat(link)?.isSymbolicLink()) continue;
 			const dest = linkDest(link);
-			if (owned(dest) && skills.get(name) !== dest) removes.push({ kind: "remove", link });
+			if (owned(link, dest) && skills.get(name) !== dest) removes.push({ kind: "remove", link });
 		}
 		for (const [name, source] of skills) {
 			const link = path.join(dir, name);
 			const st = lstat(link);
 			const dest = st?.isSymbolicLink() ? linkDest(link) : null;
 			if (dest === source) continue;
-			if (!st || (dest && owned(dest))) creates.push({ kind: "create", link, source });
+			if (!st || (dest && owned(link, dest))) creates.push({ kind: "create", link, source });
 			else conflicts.push({ kind: "conflict", link, reason: "already exists and is not managed by this plugin" });
 		}
 	}
 	return [...removes, ...creates, ...conflicts];
+}
+
+// Observe actual links, including existing installations and operations that failed.
+// Keep records for unavailable targets so they can be repaired when mounted again.
+export function collectManagedLinks(cfg: SyncConfig): Record<string, string> {
+	const managed = { ...cfg.managedLinks };
+	for (const target of cfg.targets) {
+		const dir = expandHome(target.path);
+		if (!isDir(dir)) continue;
+		for (const link of Object.keys(managed)) {
+			if (path.dirname(link) === dir) delete managed[link];
+		}
+		for (const name of fs.readdirSync(dir)) {
+			const link = path.join(dir, name);
+			if (!lstat(link)?.isSymbolicLink()) continue;
+			const dest = linkDest(link);
+			if (dest.startsWith(cfg.vaultPath + path.sep) || cfg.managedLinks?.[link] === dest) managed[link] = dest;
+		}
+	}
+	return managed;
 }
 
 // Plan that removes every link this vault owns in the given targets.
