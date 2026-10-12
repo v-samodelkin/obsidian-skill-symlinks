@@ -19,7 +19,7 @@ const links = (name: string) =>
 		fs
 			.readdirSync(agent(name))
 			.filter((n) => fs.lstatSync(path.join(agent(name), n)).isSymbolicLink())
-			.map((n) => [n, path.relative(vault(), fs.readlinkSync(path.join(agent(name), n)))]),
+			.map((n) => [n, path.relative(vault(), fs.readlinkSync(path.join(agent(name), n))).split(path.sep).join("/")]),
 	);
 const sync = () => apply(plan(cfg));
 
@@ -65,7 +65,7 @@ test("follows renames, deletions and SKILL.md removal", () => {
 test("leaves foreign entries alone and reports them", () => {
 	skill("a");
 	fs.mkdirSync(path.join(agent("claude"), "a"));
-	fs.symlinkSync(tmp, path.join(agent("codex"), "other"));
+	fs.symlinkSync(tmp, path.join(agent("codex"), "other"), "junction");
 	const ops = plan(cfg);
 	assert.deepEqual(
 		ops.map((op) => op.kind),
@@ -148,11 +148,12 @@ test("preserves untracked broken links and links repointed by the user", () => {
 	fs.unlinkSync(path.join(agent("claude"), "a"));
 	const foreign = path.join(tmp, "foreign-missing", "skills/a");
 	fs.symlinkSync(foreign, path.join(agent("claude"), "a"), "junction");
+	const foreignDest = fs.readlinkSync(path.join(agent("claude"), "a"));
 	delete cfg.managedLinks[path.join(agent("codex"), "a")];
 	assert.equal(plan(cfg).length, 2);
 	assert.ok(plan(cfg).every((op) => op.kind === "conflict"));
 	sync();
-	assert.equal(fs.readlinkSync(path.join(agent("claude"), "a")), foreign);
+	assert.equal(fs.readlinkSync(path.join(agent("claude"), "a")), foreignDest);
 });
 
 test("keeps links while the adapter still points to an unavailable vault", () => {
@@ -229,4 +230,56 @@ test("continues watching a group moved elsewhere in the vault", () => {
 	assert.deepEqual(links("codex"), {});
 	assert.equal(affectsConfiguredFolders(cfg, "private/b/SKILL.md"), true);
 	assert.equal(affectsConfiguredFolders(cfg, "unrelated/file.md"), false);
+});
+
+test("directory links are idempotent and removal preserves the source", () => {
+	skill("a");
+	assert.deepEqual(sync().failed, []);
+	const link = path.join(agent("claude"), "a");
+	assert.ok(fs.lstatSync(link).isSymbolicLink());
+	assert.equal(fs.realpathSync(link), fs.realpathSync(path.join(vault(), "skills/a")));
+	assert.deepEqual(plan(cfg), []);
+	assert.deepEqual(apply(planRemoval(cfg)).failed, []);
+	assert.equal(fs.existsSync(link), false);
+	assert.ok(fs.existsSync(path.join(vault(), "skills/a/SKILL.md")));
+});
+
+test("Windows junctions accept equivalent vault path spellings", { skip: process.platform !== "win32" }, () => {
+	skill("a");
+	assert.deepEqual(sync().failed, []);
+	for (const vaultPath of [vault().toUpperCase(), vault().replaceAll("\\", "/"), path.toNamespacedPath(vault()), vault() + path.sep]) {
+		const variant = { ...cfg, vaultPath };
+		assert.deepEqual(plan(variant), [], vaultPath);
+		assert.equal(planRemoval(variant).length, 2, vaultPath);
+		assert.equal(Object.keys(collectManagedLinks(variant)).length, 2, vaultPath);
+	}
+});
+
+test("Windows retains recorded junctions across target path spelling changes and a vault move", { skip: process.platform !== "win32" }, () => {
+	skill("a");
+	sync();
+	cfg.managedLinks = collectManagedLinks(cfg);
+	const moved = path.join(tmp, "moved-vault");
+	fs.renameSync(vault(), moved);
+	cfg.vaultPath = moved;
+	cfg.targets = cfg.targets.map((target) => ({ ...target, path: path.toNamespacedPath(target.path.toUpperCase()) }));
+	assert.deepEqual(sync().failed, []);
+	assert.equal(fs.realpathSync(path.join(agent("claude"), "a")), fs.realpathSync(path.join(moved, "skills/a")));
+	assert.deepEqual(plan(cfg), []);
+	cfg.managedLinks = collectManagedLinks(cfg);
+	assert.equal(Object.keys(cfg.managedLinks).length, 2);
+	assert.deepEqual(apply(planRemoval(cfg)).failed, []);
+	assert.deepEqual(collectManagedLinks(cfg), {});
+});
+
+test("does not claim a sibling vault with the same path prefix", () => {
+	skill("a");
+	const sibling = vault() + "-other";
+	fs.mkdirSync(path.join(sibling, "skills/a"), { recursive: true });
+	fs.symlinkSync(path.join(sibling, "skills/a"), path.join(agent("claude"), "a"), "junction");
+	const ops = plan(cfg);
+	assert.equal(ops.filter((op) => op.kind === "conflict").length, 1);
+	assert.equal(ops.filter((op) => op.kind === "remove").length, 0);
+	assert.deepEqual(collectManagedLinks(cfg), {});
+	assert.deepEqual(planRemoval(cfg), []);
 });

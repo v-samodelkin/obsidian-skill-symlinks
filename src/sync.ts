@@ -56,6 +56,23 @@ const subdirs = (dir: string): string[] =>
 
 const linkDest = (link: string): string => path.resolve(path.dirname(link), fs.readlinkSync(link));
 
+// Compare equivalent Windows paths without changing the paths used for filesystem operations.
+const pathKey = (value: string): string => {
+	const absolute = path.toNamespacedPath(path.resolve(value));
+	return os.platform() === "win32" ? absolute.toLowerCase() : absolute;
+};
+
+const samePath = (left: string | null | undefined, right: string | null | undefined): boolean =>
+	left != null && right != null && pathKey(left) === pathKey(right);
+
+const inside = (parent: string, child: string): boolean => {
+	const relative = path.relative(pathKey(parent), pathKey(child));
+	return relative !== "" && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+};
+
+const recordedLinks = (cfg: SyncConfig): Map<string, string> =>
+	new Map(Object.entries(cfg.managedLinks ?? {}).map(([link, dest]) => [pathKey(link), pathKey(dest)]));
+
 export const targetExists = (target: string): boolean => isDir(expandHome(target));
 
 // Codex, Cursor, Copilot, Gemini CLI, OpenCode and most other agents read ~/.agents/skills;
@@ -73,13 +90,13 @@ function desired(cfg: SyncConfig): { want: Map<string, Map<string, string>>; con
 		for (const name of subdirs(dir)) {
 			const source = path.join(dir, name);
 			// A group folder (or a folder containing one) is never a skill itself.
-			if (groupDirs.some((d) => d === source || d.startsWith(source + path.sep))) continue;
+			if (groupDirs.some((d) => samePath(d, source) || inside(source, d))) continue;
 			if (cfg.requireSkillMd && !fs.existsSync(path.join(source, "SKILL.md"))) continue;
 			for (const [target, skills] of want) {
 				if (group.skip.includes(target)) continue;
 				const taken = skills.get(name);
 				if (!taken) skills.set(name, source);
-				else if (taken !== source)
+				else if (!samePath(taken, source))
 					conflicts.push({
 						kind: "conflict",
 						link: path.join(expandHome(target), name),
@@ -97,9 +114,10 @@ export function plan(cfg: SyncConfig): Op[] {
 	// The adapter may still refer to the old vault path until Obsidian reopens it.
 	if (!isDir(cfg.vaultPath)) return [];
 	const { want, conflicts } = desired(cfg);
+	const recorded = recordedLinks(cfg);
 	const owned = (link: string, dest: string) =>
-		dest.startsWith(cfg.vaultPath + path.sep) ||
-		(cfg.managedLinks?.[link] === dest && !fs.existsSync(dest));
+		inside(cfg.vaultPath, dest) ||
+		(recorded.get(pathKey(link)) === pathKey(dest) && !fs.existsSync(dest));
 	const removes: Op[] = [];
 	const creates: Op[] = [];
 	for (const target of cfg.targets) {
@@ -110,13 +128,13 @@ export function plan(cfg: SyncConfig): Op[] {
 			const link = path.join(dir, name);
 			if (!lstat(link)?.isSymbolicLink()) continue;
 			const dest = linkDest(link);
-			if (owned(link, dest) && skills.get(name) !== dest) removes.push({ kind: "remove", link });
+			if (owned(link, dest) && !samePath(skills.get(name), dest)) removes.push({ kind: "remove", link });
 		}
 		for (const [name, source] of skills) {
 			const link = path.join(dir, name);
 			const st = lstat(link);
 			const dest = st?.isSymbolicLink() ? linkDest(link) : null;
-			if (dest === source) continue;
+			if (samePath(dest, source)) continue;
 			if (!st || (dest && owned(link, dest))) creates.push({ kind: "create", link, source });
 			else conflicts.push({ kind: "conflict", link, reason: "already exists and is not managed by this plugin" });
 		}
@@ -128,17 +146,18 @@ export function plan(cfg: SyncConfig): Op[] {
 // Keep records for unavailable targets so they can be repaired when mounted again.
 export function collectManagedLinks(cfg: SyncConfig): Record<string, string> {
 	const managed = { ...cfg.managedLinks };
+	const recorded = recordedLinks(cfg);
 	for (const target of cfg.targets) {
 		const dir = expandHome(target.path);
 		if (!isDir(dir)) continue;
 		for (const link of Object.keys(managed)) {
-			if (path.dirname(link) === dir) delete managed[link];
+			if (samePath(path.dirname(link), dir)) delete managed[link];
 		}
 		for (const name of fs.readdirSync(dir)) {
 			const link = path.join(dir, name);
 			if (!lstat(link)?.isSymbolicLink()) continue;
 			const dest = linkDest(link);
-			if (dest.startsWith(cfg.vaultPath + path.sep) || cfg.managedLinks?.[link] === dest) managed[link] = dest;
+			if (inside(cfg.vaultPath, dest) || recorded.get(pathKey(link)) === pathKey(dest)) managed[link] = dest;
 		}
 	}
 	return managed;
