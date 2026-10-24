@@ -1,7 +1,7 @@
 // Finds Claude Code config folders so settings can suggest them. Nothing is added automatically.
 import * as path from "path";
 import { type Target, claudeConfigOf } from "./model.ts";
-import { folderKey, resolvePath } from "./paths.ts";
+import { folderKey, literalPath, resolvePath } from "./paths.ts";
 import type { Context } from "./sync.ts";
 
 // Claude Code keeps projects/ and settings.json in its config folder, and .claude.json too when the
@@ -26,7 +26,8 @@ export function findClaudeConfigs(ctx: Context): string[] {
 		keys.add(key);
 		found.push(dir);
 	};
-	const fromEnv = env.vars.CLAUDE_CONFIG_DIR ? resolvePath(env.vars.CLAUDE_CONFIG_DIR, env).path : undefined;
+	// Claude Code reads the variable as a path, so a "$" in it is part of a folder name.
+	const fromEnv = env.vars.CLAUDE_CONFIG_DIR ? resolvePath(literalPath(env.vars.CLAUDE_CONFIG_DIR), env).path : undefined;
 	if (fromEnv) add(fromEnv);
 	add(path.join(env.home, ".claude"));
 	for (const name of (fs.list(env.home) ?? []).sort()) if (/^\.claude[-_.]/i.test(name)) add(path.join(env.home, name));

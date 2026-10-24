@@ -45,6 +45,8 @@ export interface PlanOptions {
 
 const linkDest = (fs: FileSystem, link: string): string => path.resolve(path.dirname(link), fs.readlink(link));
 
+const linksTo = (fs: FileSystem, link: string, source: string): boolean => fs.kind(link) === "link" && samePath(linkDest(fs, link), source);
+
 // Links this plugin creates are always named after the skill folder they point to.
 const sameName = (a: string, b: string): boolean =>
 	os.platform() === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
@@ -113,11 +115,11 @@ const nameKey = (folder: Folder, name: string): string => (folder.ignoreCase ? n
 // Resolved target folders, merged when two targets reach the same folder.
 function targetFolders(cfg: SyncConfig, { fs, env }: Context, off: (t: Target) => boolean) {
 	const folders = new Map<string, Folder>();
-	let unresolved = false;
+	const unresolved: { target: Target; error: string }[] = [];
 	for (const target of cfg.targets) {
 		const resolved = resolveTarget(target, env);
 		if (resolved.error !== undefined) {
-			unresolved = true;
+			unresolved.push({ target, error: resolved.error });
 			continue;
 		}
 		const key = folderKey(fs, resolved.path);
@@ -140,17 +142,23 @@ function targetFolders(cfg: SyncConfig, { fs, env }: Context, off: (t: Target) =
  * link is recorded. Outside the vault only a recorded link whose destination is gone is ours, so it can
  * be repaired after a vault move. Links into a vault nested inside this one, and other links into this
  * vault, are never ours.
+ *
+ * A nested vault is a folder with its own config folder. The skills folder, the group folders and the
+ * folders above them never count as one: this vault's own skills are inside them, for example when a
+ * parent of the skills folder was once opened as a vault of its own, as 1.0 treated it.
  */
 function ownership(cfg: SyncConfig, fs: FileSystem): (link: string, dest: string) => boolean {
 	const recorded = new Map(Object.entries(cfg.managedLinks ?? {}).map(([link, dest]) => [entryKey(fs, link), pathKey(dest)]));
 	const root = path.join(cfg.vaultPath, cfg.skillsFolder);
 	const groupDirs = cfg.groups.map((g) => path.join(root, g.folder));
+	const configured = [root, ...groupDirs];
+	const holdsSkills = (dir: string): boolean => configured.some((d) => samePath(d, dir) || inside(dir, d));
 	const { configDir } = cfg;
 	const inVault = (dest: string): boolean => {
 		if (!inside(cfg.vaultPath, dest)) return false;
 		if (configDir)
 			for (let dir = path.dirname(dest); inside(cfg.vaultPath, dir); dir = path.dirname(dir))
-				if (fs.kind(path.join(dir, configDir)) === "dir") return false;
+				if (!holdsSkills(dir) && fs.kind(path.join(dir, configDir)) === "dir") return false;
 		return true;
 	};
 	const skillFolder = (dest: string): boolean =>
@@ -178,6 +186,9 @@ export function plan(cfg: SyncConfig, ctx: Context = nodeContext(), options: Pla
 	const { folders, unresolved } = targetFolders(cfg, ctx, off);
 	const conflicts: Op[] = [];
 	const shown = (p: string) => tildify(p, env.home);
+	for (const { target, error } of unresolved)
+		if (!off(target))
+			conflicts.push({ kind: "conflict", target: target.id, name: "", link: target.path, reason: `${error}, so this folder is skipped` });
 
 	const skills = listSkills(cfg, fs);
 	const held = heldSkills(cfg, skills);
@@ -199,18 +210,20 @@ export function plan(cfg: SyncConfig, ctx: Context = nodeContext(), options: Pla
 			if (!target) continue;
 			const key = nameKey(folder, skill.name);
 			const taken = folder.wants.get(key);
-			if (!taken) folder.wants.set(key, { name: skill.name, source: skill.source, target });
-			else if (!samePath(taken.source, skill.source))
-				conflicts.push({
-					kind: "conflict",
-					target,
-					name: skill.name,
-					link: path.join(folder.dir, skill.name),
-					reason:
-						taken.name === skill.name
-							? `both ${shown(taken.source)} and ${shown(skill.source)} are named "${skill.name}"`
-							: `${shown(taken.source)} and ${shown(skill.source)} differ only in letter case, which this folder does not tell apart`,
-				});
+			const want: Want = { name: skill.name, source: skill.source, target };
+			if (!taken) folder.wants.set(key, want);
+			else if (!samePath(taken.source, skill.source)) {
+				const reason =
+					taken.name === skill.name
+						? `both ${shown(taken.source)} and ${shown(skill.source)} are named "${skill.name}"`
+						: `${shown(taken.source)} and ${shown(skill.source)} differ only in letter case, which this folder does not tell apart`;
+				// Names that differ only in case: the skill already linked here keeps its link, so a clash
+				// that an earlier version left in place does not move the link to the other skill.
+				const holds = taken.name !== skill.name && linksTo(fs, path.join(folder.dir, skill.name), skill.source);
+				const skipped = holds ? taken : want;
+				if (holds) folder.wants.set(key, want);
+				conflicts.push({ kind: "conflict", target: skipped.target, name: skipped.name, link: path.join(folder.dir, skipped.name), reason });
+			}
 		}
 	}
 
@@ -261,7 +274,7 @@ export function plan(cfg: SyncConfig, ctx: Context = nodeContext(), options: Pla
 
 	// A target that was removed or now points elsewhere leaves recorded links behind. Skip this while
 	// any target path cannot be resolved: its links would look abandoned when they are not.
-	if (!unresolved) {
+	if (!unresolved.length) {
 		const seen = new Set<string>();
 		for (const link of Object.keys(cfg.managedLinks ?? {})) {
 			const key = entryKey(fs, link);
@@ -316,7 +329,7 @@ export function collectManagedLinks(cfg: SyncConfig, ctx: Context = nodeContext(
 		}
 	}
 	// Folders that are no longer targets: forget links that are gone, so cleanup ends once it succeeds.
-	if (!unresolved)
+	if (!unresolved.length)
 		for (const [link, dest] of Object.entries(managed)) {
 			const dir = path.dirname(link);
 			if (folders.has(folderKey(fs, dir)) || !fs.isDir(dir)) continue;

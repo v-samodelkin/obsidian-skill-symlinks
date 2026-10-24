@@ -15,7 +15,7 @@ import {
 	setRoute,
 	targetFor,
 } from "./model.ts";
-import { folderKey, resolvePath, tildify } from "./paths.ts";
+import { folderKey, literalPath, resolvePath, tildify } from "./paths.ts";
 import { effectiveRouting, heldSkills, listSkills } from "./sync.ts";
 
 export type { Settings } from "./data.ts";
@@ -207,14 +207,16 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 	// Folders found on this computer that are not in the list. Nothing is added until the user asks.
 	private displaySuggestions(containerEl: HTMLElement) {
 		const { fs, env } = this.ctx;
-		const suggestions: Pick<Target, "label" | "path" | "kind">[] = unlinkedClaudeConfigs(this.ctx, this.settings.targets).map(
-			(dir) => ({ label: claudeLabel(dir), path: tildify(dir, env.home), kind: "claude" }),
-		);
+		// A found folder is stored as a literal path, so a "$" in its name is not read as a variable.
+		const suggestions: (Pick<Target, "label" | "path" | "kind"> & { where: string })[] = unlinkedClaudeConfigs(
+			this.ctx,
+			this.settings.targets,
+		).map((dir) => ({ label: claudeLabel(dir), path: literalPath(tildify(dir, env.home)), where: tildify(dir, env.home), kind: "claude" }));
 		const shared = defaultTargets().find((t) => t.path === SHARED_AGENTS_PATH)!;
 		const sharedDir = resolveTarget(shared, env).path;
 		const listed = new Set(this.settings.targets.flatMap((t) => resolveTarget(t, env).path ?? []).map((p) => folderKey(fs, p)));
 		if (sharedDir && fs.isDir(sharedDir) && !listed.has(folderKey(fs, sharedDir)))
-			suggestions.push({ label: shared.label, path: shared.path, kind: "folder" });
+			suggestions.push({ label: shared.label, path: shared.path, where: shared.path, kind: "folder" });
 		const hidden = this.settings.hiddenSuggestions;
 		const shown = suggestions.filter((s) => !hidden.includes(s.path));
 		if (!shown.length && !hidden.length) return;
@@ -238,7 +240,7 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		for (const suggestion of shown)
 			new Setting(containerEl)
 				.setName(suggestion.label)
-				.setDesc(`${KIND_NAMES[suggestion.kind]}: ${suggestion.path}`)
+				.setDesc(`${KIND_NAMES[suggestion.kind]}: ${suggestion.where}`)
 				.addButton((button) =>
 					button.setButtonText("Add").onClick(async () => {
 						this.addTarget(suggestion.path, suggestion.kind, suggestion.label);
@@ -432,7 +434,7 @@ class TargetModal extends Modal {
 			);
 		new Setting(contentEl)
 			.setName("Folder")
-			.setDesc("May start with ~ and use environment variables that Obsidian can see.")
+			.setDesc("May start with ~ and use environment variables that Obsidian can see. Write $$ for a $ that is part of a folder name.")
 			.addText((text) =>
 				text
 					.setPlaceholder(this.kind === "claude" ? "~/.claude-work" : "~/.my-agent/skills")

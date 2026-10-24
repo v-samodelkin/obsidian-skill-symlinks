@@ -84,6 +84,31 @@ test("migrated settings plan the same links as 1.0.x", () => {
 	assert.deepEqual(names(".cursor/skills"), ["review"]);
 });
 
+test("1.0.x paths with a $ keep the folder 1.0.x linked into", () => {
+	const written = ["~/$odd/skills", "/data/${x}/skills", "~/$work/.claude/skills", "$HOME/.gemini/skills"];
+	const { settings } = loadSettings({ enabled: true, targets: written.map((p) => ({ path: p, enabled: true })) });
+	assert.deepEqual(
+		settings.targets.map((t) => [t.kind, t.path, t.label]),
+		[
+			["folder", "~/$$odd/skills", "~/$odd/skills"],
+			["folder", "/data/$${x}/skills", "/data/${x}/skills"],
+			["claude", "~/$$work/.claude", "Claude Code"],
+			// 1.0.x read this as a relative path and never linked there; the variable now expands.
+			["folder", "$HOME/.gemini/skills", "$HOME/.gemini/skills"],
+		],
+	);
+	const withHome = fakeEnv(home, { HOME: home, odd: "/elsewhere", x: "/elsewhere", work: "/elsewhere" });
+	assert.deepEqual(
+		settings.targets.map((t) => resolveTarget(t, withHome).path),
+		[
+			path.join(home, "$odd/skills"),
+			path.resolve("/data/${x}/skills"),
+			path.join(home, "$work/.claude/skills"),
+			path.join(home, ".gemini/skills"),
+		],
+	);
+});
+
 test("1.0.x defaults fill in missing fields the way 1.0.x read them", () => {
 	const { settings } = loadSettings({ enabled: true, targets: [{ path: "~/a/skills" }] });
 	assert.equal(settings.targets[0].enabled, false);

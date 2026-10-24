@@ -1,5 +1,7 @@
 // Stored settings: defaults, validation and migration from earlier formats. No Obsidian imports.
+import * as path from "path";
 import { type Group, type Routing, type Target, defaultTargets, targetFor, uniqueId } from "./model.ts";
+import { literalPath } from "./paths.ts";
 
 export const SETTINGS_VERSION = 2;
 
@@ -46,6 +48,11 @@ function routing(value: unknown): Routing {
 	return { mode: "all", except: isObject(value) ? strings(value.except) : [] };
 }
 
+// 1.0.x read a path as written, expanding only a leading "~/". A path that was absolute that way named a
+// real folder, so a "$" in it stays a "$". Any other path could never be linked, and now expands.
+const fromV1Path = (written: string, converted: string): string =>
+	written === "~" || written.startsWith("~/") || path.isAbsolute(written) ? literalPath(converted) : converted;
+
 /**
  * 1.0.x stored targets as skills folder paths and groups as lists of target paths to skip.
  * Paths keep their meaning: ~/.claude/skills becomes the Claude Code config folder ~/.claude, whose
@@ -58,6 +65,7 @@ function fromV1(raw: Raw): Settings {
 	for (const entry of list(raw.targets)) {
 		if (!isObject(entry) || typeof entry.path !== "string" || idByPath.has(entry.path)) continue;
 		const target = targetFor(entry.path, "auto", targets.map((t) => t.id));
+		target.path = fromV1Path(entry.path, target.path);
 		// 1.0.x skipped a target unless `enabled` was true.
 		target.enabled = entry.enabled === true;
 		targets.push(target);

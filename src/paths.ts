@@ -4,15 +4,17 @@ import type { Env, FileSystem } from "./fsys.ts";
 
 export type Resolved = { path: string; error?: undefined } | { path?: undefined; error: string };
 
-const VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+const VARIABLE = /\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
-// Expands a leading "~" and $NAME or ${NAME} variables. Obsidian started from a dock or start menu
-// usually lacks variables set only in a shell profile, so an unset variable is an error, not "".
+// Expands a leading "~" and $NAME or ${NAME} variables; "$$" is a literal "$". Obsidian started from a
+// dock or start menu usually lacks variables set only in a shell profile, so an unset variable is an
+// error, not "".
 export function resolvePath(value: string, env: Env): Resolved {
 	let p = value.trim();
 	if (!p) return { error: "no path" };
 	const missing = new Set<string>();
 	p = p.replace(VARIABLE, (match: string, braced?: string, bare?: string) => {
+		if (match === "$$") return "$";
 		const name = braced ?? bare ?? "";
 		const found = env.vars[name];
 		if (!found) missing.add(name);
@@ -24,9 +26,13 @@ export function resolvePath(value: string, env: Env): Resolved {
 	return { path: path.resolve(p) };
 }
 
-// Shortens a path under the home folder for display.
+/** A path written so that resolvePath reads every "$" in it as a "$", not as a variable. */
+export const literalPath = (p: string): string => p.replace(/\$/g, () => "$$");
+
+// Shortens a path under the home folder for display. Anything not absolute, such as a path whose
+// variable is not set, is shown as written.
 export function tildify(p: string, home: string): string {
-	if (!home) return p;
+	if (!home || !path.isAbsolute(p)) return p;
 	if (samePath(p, home)) return "~";
 	return inside(home, p) ? "~" + path.sep + path.relative(home, p) : p;
 }

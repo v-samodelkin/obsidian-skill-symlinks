@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { beforeEach, test } from "node:test";
 import { findClaudeConfigs, unlinkedClaudeConfigs } from "../src/discover.ts";
 import { type Target, type TargetKind, setMode, setRoute } from "../src/model.ts";
-import { resolvePath } from "../src/paths.ts";
+import { literalPath, resolvePath } from "../src/paths.ts";
 import { followFolderRename } from "../src/rename.ts";
 import { noticeLines, previewSections } from "../src/report.ts";
 import { type Context, type Op, type SyncConfig, apply, collectManagedLinks, plan, planRemoval } from "../src/sync.ts";
@@ -140,8 +140,19 @@ test("cleanup of old folders waits while a target path cannot be resolved", () =
 	cfg.managedLinks = collectManagedLinks(cfg, ctx);
 	cfg.targets = cfg.targets.filter((t) => t.id !== "work");
 	cfg.targets.push(target("env", "folder", "$SKILLS_HOME/skills"));
+	// Nothing changes, and the skipped folder is reported in notices and the preview, not only in settings.
+	const ops = plan(cfg, ctx);
+	assert.deepEqual(
+		ops.map((op) => [op.kind, op.target, op.link, op.kind === "conflict" ? op.reason : ""]),
+		[["conflict", "env", "$SKILLS_HOME/skills", "$SKILLS_HOME is not set in Obsidian's environment, so this folder is skipped"]],
+	);
+	assert.deepEqual(noticeLines([], ops, [], cfg.targets, home), [
+		"Skipped $SKILLS_HOME/skills: $SKILLS_HOME is not set in Obsidian's environment, so this folder is skipped",
+	]);
+	cfg.targets[cfg.targets.length - 1].enabled = false;
 	assert.deepEqual(plan(cfg, ctx), []);
 	assert.deepEqual(collectManagedLinks(cfg, ctx), cfg.managedLinks);
+	cfg.targets[cfg.targets.length - 1].enabled = true;
 	fs.dir(path.join(root, "shared/skills"));
 	ctx.env.vars.SKILLS_HOME = path.join(root, "shared");
 	assert.deepEqual(kinds(plan(cfg, ctx)), ["remove .claude-work/skills/review", "create ../shared/skills/review"]);
@@ -157,6 +168,11 @@ test("target paths expand ~ and environment variables", () => {
 	assert.match(resolvePath("${EMPTY}/x", env).error ?? "", /\$EMPTY is not set/);
 	assert.equal(resolvePath("relative/skills", env).error, "not an absolute path");
 	assert.equal(resolvePath("  ", env).error, "no path");
+	// "$$" is a literal "$", so any folder name can be written.
+	assert.equal(resolvePath("~/$$odd/$${WORK}/$$$$", env).path, at("$odd", "${WORK}", "$$"));
+	assert.equal(resolvePath("$WORK/$$WORK", env).path, path.join(at(".claude-work"), "$WORK"));
+	for (const name of ["$odd", "${odd}", "a$$b", "$", "x$"])
+		assert.equal(resolvePath(literalPath(`~/${name}/skills`), env).path, at(name, "skills"));
 
 	skill("review");
 	ctx.env.vars.WORK_CONFIG = at(".claude-work");

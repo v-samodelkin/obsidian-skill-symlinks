@@ -226,3 +226,73 @@ test("skills that were already linked are not held back", () => {
 	cfg.skillRouting = { "skills/gone": { mode: "only", only: [] } };
 	assert.deepEqual(plan(cfg, ctx), []);
 });
+
+// 1.0 claimed every link into the vault. A config folder above the skills, for example in a parent of
+// the skills folder that was once opened as a vault of its own, must not hide this vault's links.
+for (const [skillsFolder, configAt] of [
+	["AI/skills", "AI"],
+	["skills", "skills"],
+	["skills", "skills/personal"],
+])
+	test(`after upgrading from 1.0, a config folder in ${configAt} does not hide links to skills in ${skillsFolder}`, () => {
+		const fs = new FakeFs();
+		fs.dir(at(".agents/skills")).file(at(".claude/settings.json")).dir(at(".claude/skills"));
+		const { ctx, cfg } = setup(fs);
+		cfg.skillsFolder = skillsFolder;
+		const skills = path.join(vault, skillsFolder);
+		fs.dir(path.join(vault, configAt, ".obsidian"));
+		for (const name of ["review", "lint", "personal/journal"]) fs.file(path.join(skills, name, "SKILL.md"));
+		// What 1.0.1 and 1.0.2 left: every skill linked where its group goes, and recorded.
+		cfg.managedLinks = {};
+		for (const [dir, names] of [
+			[".agents/skills", ["review", "lint"]],
+			[".claude/skills", ["review", "lint", "personal/journal"]],
+		] as const)
+			for (const name of names) {
+				const link = at(dir, path.basename(name));
+				fs.link(link, path.join(skills, name));
+				cfg.managedLinks[link] = path.join(skills, name);
+			}
+		assert.deepEqual(rel(plan(cfg, ctx)), []);
+		assert.deepEqual(collectManagedLinks(cfg, ctx), cfg.managedLinks);
+
+		// Outside Obsidian, lint is deleted and review renamed: the stale links go, as in 1.0.
+		fs.drop(path.join(skills, "lint")).drop(path.join(skills, "review")).file(path.join(skills, "review-v2/SKILL.md"));
+		assert.deepEqual(rel(plan(cfg, ctx)).sort(), [
+			"create .agents/skills/review-v2",
+			"create .claude/skills/review-v2",
+			"remove .agents/skills/lint",
+			"remove .agents/skills/review",
+			"remove .claude/skills/lint",
+			"remove .claude/skills/review",
+		]);
+		assert.deepEqual(apply(plan(cfg, ctx), fs).failed, []);
+		cfg.managedLinks = collectManagedLinks(cfg, ctx);
+		assert.equal(Object.keys(cfg.managedLinks).length, 3);
+		assert.deepEqual(plan(cfg, ctx), []);
+
+		// Turning a folder off unlinks it, and "Remove all links" removes every link.
+		cfg.targets[1].enabled = false;
+		assert.deepEqual(rel(plan(cfg, ctx)).sort(), ["remove .claude/skills/journal", "remove .claude/skills/review-v2"]);
+		cfg.targets[1].enabled = true;
+		assert.deepEqual(rel(planRemoval(cfg, ctx)).sort(), [
+			"remove .agents/skills/review-v2",
+			"remove .claude/skills/journal",
+			"remove .claude/skills/review-v2",
+		]);
+	});
+
+test("after upgrading from 1.0, a case-only clash keeps the link where 1.0 left it", () => {
+	const { fs, ctx, cfg } = caseInsensitive();
+	fs.file(path.join(vault, "skills/Lint/SKILL.md")).file(path.join(vault, "skills/personal/lint/SKILL.md"));
+	// 1.0 linked personal/lint first; once Lint appeared it failed to link it on every sync.
+	fs.link(at(".agents/skills/Lint"), path.join(vault, "skills/Lint"));
+	fs.link(at(".claude/skills/lint"), path.join(vault, "skills/personal/lint"));
+	const ops = plan(cfg, ctx);
+	assert.deepEqual(rel(ops), ["conflict .claude/skills/Lint"]);
+	assert.equal(ops[0].target, "claude");
+	assert.match(ops[0].kind === "conflict" ? ops[0].reason : "", /differ only in letter case/);
+	assert.deepEqual(apply(ops, fs).failed, []);
+	assert.deepEqual(fs.links(at(".claude/skills")), { lint: path.join(vault, "skills/personal/lint") });
+	assert.deepEqual(rel(plan(cfg, ctx)), ["conflict .claude/skills/Lint"]);
+});
