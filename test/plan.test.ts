@@ -254,6 +254,13 @@ test("finds Claude Code config folders and suggests the ones not in the list", (
 	]);
 });
 
+test("a config folder reached through a symlink is found once and counts as linked", () => {
+	fs.link(at(".config/claude"), at(".claude"));
+	assert.deepEqual(findClaudeConfigs(ctx), [at(".claude"), at(".claude-work")]);
+	const targets = [target("alias", "claude", "~/.config/claude")];
+	assert.deepEqual(unlinkedClaudeConfigs(ctx, targets), [at(".claude-work")]);
+});
+
 test("previews and notices group changes by target", () => {
 	skill("review");
 	skill("personal/journal");

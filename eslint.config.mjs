@@ -9,6 +9,10 @@ export default defineConfig([
 			parserOptions: { projectService: { allowDefaultProject: ["eslint.config.mjs", "esbuild.config.mjs"] } },
 		},
 	},
-	// node:test registers tests via returned promises that the runner awaits.
-	{ files: ["test/**"], rules: { "@typescript-eslint/no-floating-promises": "off" } },
+	// node:test registers tests via returned promises that the runner awaits. Test vaults use the
+	// default config folder name, which the plugin itself reads from the vault.
+	{
+		files: ["test/**"],
+		rules: { "@typescript-eslint/no-floating-promises": "off", "obsidianmd/hardcoded-config-path": "off" },
+	},
 ]);

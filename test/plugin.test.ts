@@ -7,6 +7,10 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { buildSync } from "esbuild";
 import type { Settings } from "../src/data.ts";
+import type { Target } from "../src/model.ts";
+
+// What the plugin saves: the settings with targets under their own key.
+type Stored = Omit<Settings, "targets"> & { agentFolders: Target[] };
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({
@@ -21,7 +25,7 @@ class Folder {
 
 // Exercise the shipped plugin entry point with only Obsidian's host API stubbed.
 async function loadPlugin(vaultPath: string, data: object) {
-	let saved = JSON.parse(JSON.stringify(data)) as Settings;
+	let saved = JSON.parse(JSON.stringify(data)) as Stored;
 	const events = new Map<string, (file: Folder, oldPath?: string) => void>();
 	class Adapter {
 		getBasePath() { return vaultPath; }
@@ -32,8 +36,8 @@ async function loadPlugin(vaultPath: string, data: object) {
 			workspace: { onLayoutReady: (fn: () => void) => fn() },
 		};
 		loadData() { return Promise.resolve(saved); }
-		saveData(value: Settings) {
-			saved = JSON.parse(JSON.stringify(value)) as Settings;
+		saveData(value: Stored) {
+			saved = JSON.parse(JSON.stringify(value)) as Stored;
 			return Promise.resolve();
 		}
 		addSettingTab() {}
@@ -104,13 +108,20 @@ test("folder settings follow renames while sync is off without creating links", 
 	assert.deepEqual(fs.readdirSync(target), []);
 });
 
-test("1.0.x settings are rewritten once in the current format and existing links stay", async () => {
+test("1.0.x settings are left as they are until something changes", async () => {
+	const { vault, data } = fixture(false);
+	const host = await loadPlugin(vault, data);
+	assert.deepEqual(host.data(), data);
+	assert.equal(host.plugin.settings.version, 2);
+});
+
+test("1.0.x settings are written in the current format with the first sync record, and existing links stay", async () => {
 	const { vault, target, data } = fixture();
 	fs.symlinkSync(path.join(vault, "parent/skills/example"), path.join(target, "example"), "junction");
 	const host = await loadPlugin(vault, data);
 	const saved = host.data();
 	assert.equal(saved.version, 2);
-	assert.deepEqual(saved.targets.map((t) => [t.kind, t.path, t.enabled]), [["folder", target, true]]);
+	assert.deepEqual(saved.agentFolders.map((t) => [t.kind, t.path, t.enabled]), [["folder", target, true]]);
 	assert.deepEqual(saved.groups, [{ folder: "", routing: { mode: "all", except: [] } }]);
 	assert.equal(fs.realpathSync(path.join(target, "example")), path.join(vault, "parent/skills/example"));
 	const again = await loadPlugin(vault, saved);

@@ -1,4 +1,5 @@
-// In-memory FileSystem for planner tests: directories, files and symlinks with POSIX-like resolution.
+// In-memory FileSystem for planner tests: directories, files and symlinks with POSIX-like resolution,
+// optionally on a volume that ignores letter case (keeping each name as it was created).
 import * as path from "node:path";
 import type { EntryKind, Env, FileSystem } from "../src/fsys.ts";
 
@@ -10,27 +11,56 @@ const fail = (code: string, p: string): never => {
 
 export class FakeFs implements FileSystem {
 	entries = new Map<string, Entry>();
+	private ignoreCase: boolean;
+
+	constructor(options: { ignoreCase?: boolean } = {}) {
+		this.ignoreCase = options.ignoreCase ?? false;
+	}
+
+	// The stored spelling of a path, which differs from `p` only in letter case on a case-insensitive volume.
+	private stored(p: string): string | undefined {
+		if (this.entries.has(p)) return p;
+		if (!this.ignoreCase) return undefined;
+		const folded = p.toLowerCase();
+		for (const key of this.entries.keys()) if (key.toLowerCase() === folded) return key;
+		return undefined;
+	}
+
+	// Where a path is (or would be) stored, with every parent in its stored spelling; links are not followed.
+	private place(p: string): string {
+		const abs = path.resolve(p);
+		if (abs === path.parse(abs).root) return abs;
+		const at = path.join(this.place(path.dirname(abs)), path.basename(abs));
+		return this.stored(at) ?? at;
+	}
 
 	/** Creates a directory and its parents. */
 	dir(p: string): this {
 		const abs = path.resolve(p);
-		const root = path.parse(abs).root;
-		if (abs !== root) {
+		if (abs !== path.parse(abs).root) {
 			this.dir(path.dirname(abs));
-			if (!this.entries.has(abs)) this.entries.set(abs, { kind: "dir" });
+			const at = this.place(abs);
+			if (!this.entries.has(at)) this.entries.set(at, { kind: "dir" });
 		}
 		return this;
 	}
 
 	file(p: string): this {
 		this.dir(path.dirname(p));
-		this.entries.set(path.resolve(p), { kind: "file" });
+		this.entries.set(this.place(p), { kind: "file" });
 		return this;
 	}
 
 	link(link: string, to: string): this {
 		this.dir(path.dirname(link));
-		this.entries.set(path.resolve(link), { kind: "link", to });
+		this.entries.set(this.place(link), { kind: "link", to });
+		return this;
+	}
+
+	/** Removes a path and everything below it, as a rename or delete outside the plugin would. */
+	drop(p: string): this {
+		const at = this.place(p);
+		for (const key of [...this.entries.keys()]) if (key === at || key.startsWith(at + path.sep)) this.entries.delete(key);
 		return this;
 	}
 
@@ -41,9 +71,9 @@ export class FakeFs implements FileSystem {
 		const { root } = path.parse(abs);
 		let current = root;
 		for (const part of abs.slice(root.length).split(path.sep).filter(Boolean)) {
-			const next = path.join(current, part);
-			const entry = this.entries.get(next);
-			if (!entry) return null;
+			const next = this.stored(path.join(current, part));
+			const entry = next === undefined ? undefined : this.entries.get(next);
+			if (next === undefined || !entry) return null;
 			if (entry.kind === "link") {
 				const resolved = this.follow(path.resolve(current, entry.to), depth + 1);
 				if (resolved === null) return null;
@@ -59,8 +89,9 @@ export class FakeFs implements FileSystem {
 		if (abs === path.parse(abs).root) return { at: abs, entry: { kind: "dir" } };
 		const parent = this.follow(path.dirname(abs));
 		if (parent === null) return null;
-		const at = path.join(parent, path.basename(abs));
-		return { at, entry: this.entries.get(at) ?? null };
+		const wanted = path.join(parent, path.basename(abs));
+		const at = this.stored(wanted);
+		return at === undefined ? { at: wanted, entry: null } : { at, entry: this.entries.get(at) ?? null };
 	}
 
 	kind(p: string): EntryKind | null {
@@ -76,9 +107,9 @@ export class FakeFs implements FileSystem {
 		return this.follow(p) !== null;
 	}
 
-	list(dir: string): string[] {
+	list(dir: string): string[] | null {
 		const real = this.follow(dir);
-		if (real === null || !this.isDir(real)) return [];
+		if (real === null || !this.isDir(real)) return null;
 		return [...this.entries.keys()].filter((k) => k !== real && path.dirname(k) === real).map((k) => path.basename(k));
 	}
 
@@ -90,6 +121,10 @@ export class FakeFs implements FileSystem {
 
 	realpath(p: string): string | null {
 		return this.follow(p);
+	}
+
+	ignoresCase(): boolean {
+		return this.ignoreCase;
 	}
 
 	symlink(source: string, link: string): void {
@@ -116,7 +151,7 @@ export class FakeFs implements FileSystem {
 	/** Link name -> destination for every symlink in a folder. */
 	links(dir: string): Record<string, string> {
 		return Object.fromEntries(
-			this.list(dir)
+			(this.list(dir) ?? [])
 				.filter((name) => this.kind(path.join(dir, name)) === "link")
 				.map((name) => [name, this.readlink(path.join(dir, name))]),
 		);

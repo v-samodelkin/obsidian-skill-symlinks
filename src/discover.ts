@@ -1,7 +1,7 @@
 // Finds Claude Code config folders so settings can suggest them. Nothing is added automatically.
 import * as path from "path";
 import { type Target, claudeConfigOf } from "./model.ts";
-import { resolvePath, samePath } from "./paths.ts";
+import { folderKey, resolvePath } from "./paths.ts";
 import type { Context } from "./sync.ts";
 
 // Claude Code keeps projects/ and settings.json in its config folder, and .claude.json too when the
@@ -18,25 +18,30 @@ export const looksLikeClaudeConfig = ({ fs }: Context, dir: string): boolean =>
 export function findClaudeConfigs(ctx: Context): string[] {
 	const { fs, env } = ctx;
 	const found: string[] = [];
+	const keys = new Set<string>();
+	// The same folder reached through a symlink is listed once.
 	const add = (dir: string) => {
-		if (!found.some((p) => samePath(p, dir)) && looksLikeClaudeConfig(ctx, dir)) found.push(dir);
+		const key = folderKey(fs, dir);
+		if (keys.has(key) || !looksLikeClaudeConfig(ctx, dir)) return;
+		keys.add(key);
+		found.push(dir);
 	};
 	const fromEnv = env.vars.CLAUDE_CONFIG_DIR ? resolvePath(env.vars.CLAUDE_CONFIG_DIR, env).path : undefined;
 	if (fromEnv) add(fromEnv);
 	add(path.join(env.home, ".claude"));
-	for (const name of fs.list(env.home).sort()) if (/^\.claude[-_.]/i.test(name)) add(path.join(env.home, name));
+	for (const name of (fs.list(env.home) ?? []).sort()) if (/^\.claude[-_.]/i.test(name)) add(path.join(env.home, name));
 	const configHome = env.vars.XDG_CONFIG_HOME || path.join(env.home, ".config");
-	for (const name of fs.list(configHome).sort()) {
+	for (const name of (fs.list(configHome) ?? []).sort()) {
 		const dir = path.join(configHome, name);
 		if (/claude/i.test(name)) add(dir);
 		else if (fs.kind(dir) === "dir")
-			for (const inner of fs.list(dir).sort()) if (/claude/i.test(inner)) add(path.join(dir, inner));
+			for (const inner of (fs.list(dir) ?? []).sort()) if (/claude/i.test(inner)) add(path.join(dir, inner));
 	}
 	return found;
 }
 
 /** Found config folders that no target links into yet. */
 export const unlinkedClaudeConfigs = (ctx: Context, targets: Target[]): string[] => {
-	const linked = targets.map((t) => claudeConfigOf(t, ctx.env));
-	return findClaudeConfigs(ctx).filter((dir) => !linked.some((p) => samePath(p, dir)));
+	const linked = new Set(targets.flatMap((t) => claudeConfigOf(t, ctx.env) ?? []).map((p) => folderKey(ctx.fs, p)));
+	return findClaudeConfigs(ctx).filter((dir) => !linked.has(folderKey(ctx.fs, dir)));
 };

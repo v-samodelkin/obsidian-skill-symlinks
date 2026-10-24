@@ -1,5 +1,5 @@
 import { FileSystemAdapter, Notice, Plugin, TAbstractFile, TFolder, debounce } from "obsidian";
-import { type Settings, defaultSettings, loadSettings } from "./data.ts";
+import { type Settings, defaultSettings, loadSettings, toData } from "./data.ts";
 import { type Target, resolveTarget } from "./model.ts";
 import { PreviewModal } from "./preview.ts";
 import { affectsConfiguredFolders, followFolderRename } from "./rename.ts";
@@ -14,10 +14,9 @@ export default class SkillSymlinksPlugin extends Plugin {
 	requestSync = debounce(() => this.sync(), 500, true);
 
 	async onload() {
-		const { settings, changed } = loadSettings(await this.loadData());
-		this.settings = settings;
-		// Settings from 1.0.x are rewritten in the current format once; nothing on disk changes.
-		if (changed) await this.saveSettings();
+		// Settings from 1.0.x are converted in memory and written in the current format only with the
+		// first change or sync record, so a device still on 1.0.x is not handed data it cannot read.
+		this.settings = loadSettings(await this.loadData()).settings;
 
 		this.addSettingTab(new SkillSymlinksSettingTab(this.app, this));
 		this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.sync(true) });
@@ -45,13 +44,13 @@ export default class SkillSymlinksPlugin extends Plugin {
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		await this.saveData(toData(this.settings));
 	}
 
 	config(): SyncConfig | null {
 		const adapter = this.app.vault.adapter;
 		if (!(adapter instanceof FileSystemAdapter)) return null;
-		return { vaultPath: adapter.getBasePath(), ...this.settings };
+		return { ...this.settings, vaultPath: adapter.getBasePath(), configDir: this.app.vault.configDir };
 	}
 
 	plan(): Op[] {

@@ -15,8 +15,8 @@ import {
 	setRoute,
 	targetFor,
 } from "./model.ts";
-import { resolvePath, samePath, tildify } from "./paths.ts";
-import { effectiveRouting, listSkills } from "./sync.ts";
+import { folderKey, resolvePath, tildify } from "./paths.ts";
+import { effectiveRouting, heldSkills, listSkills } from "./sync.ts";
 
 export type { Settings } from "./data.ts";
 
@@ -64,7 +64,9 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Sync")
-			.setDesc("Keep links to your skills in the agent folders below. You will see the changes before anything is written.")
+			.setDesc(
+				"Keep links to your skills in the agent folders below. Turning sync on shows every change first. Edits below are applied without a preview when you close the settings, so use preview to check them.",
+			)
 			.addToggle((toggle) =>
 				toggle.setValue(this.settings.enabled).onChange((on) => {
 					if (!on) {
@@ -121,16 +123,18 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 			.setHeading();
 
 		const { fs, env } = this.ctx;
-		const seen: { target: Target; dir: string }[] = [];
+		const seen: { target: Target; key: string }[] = [];
 		for (const target of this.settings.targets) {
 			const resolved = resolveTarget(target, env);
 			const notes: string[] = [];
 			let canCreate = false;
 			if (resolved.error !== undefined) notes.push(`Skipped: ${resolved.error}.`);
 			else {
-				const same = seen.find((s) => samePath(s.dir, resolved.path));
+				// Folders reached through a symlink count as the same folder and share one set of links.
+				const key = folderKey(fs, resolved.path);
+				const same = seen.find((s) => s.key === key);
 				if (same) notes.push(`Same folder as ${same.target.label}.`);
-				seen.push({ target, dir: resolved.path });
+				seen.push({ target, key });
 				if (!fs.isDir(resolved.path)) {
 					const config = target.kind === "claude" ? resolvePath(target.path, env).path : undefined;
 					canCreate = !!config && fs.isDir(config);
@@ -208,7 +212,8 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		);
 		const shared = defaultTargets().find((t) => t.path === SHARED_AGENTS_PATH)!;
 		const sharedDir = resolveTarget(shared, env).path;
-		if (sharedDir && fs.isDir(sharedDir) && !this.settings.targets.some((t) => samePath(resolveTarget(t, env).path, sharedDir)))
+		const listed = new Set(this.settings.targets.flatMap((t) => resolveTarget(t, env).path ?? []).map((p) => folderKey(fs, p)));
+		if (sharedDir && fs.isDir(sharedDir) && !listed.has(folderKey(fs, sharedDir)))
 			suggestions.push({ label: shared.label, path: shared.path, kind: "folder" });
 		const hidden = this.settings.hiddenSuggestions;
 		const shown = suggestions.filter((s) => !hidden.includes(s.path));
@@ -216,7 +221,9 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 
 		const heading = new Setting(containerEl)
 			.setName("Suggested folders")
-			.setDesc("Found on this computer but not in the list above. Nothing is added unless you add it.")
+			.setDesc(
+				"Found on this computer but not in the list above. Nothing is added unless you add it. An added folder gets every group set to all folders when you close the settings.",
+			)
 			.setHeading();
 		if (hidden.length)
 			heading.addExtraButton((button) =>
@@ -301,11 +308,14 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		const skills = cfg ? listSkills(cfg, this.ctx.fs) : [];
 		const overrides = this.settings.skillRouting;
 		const missing = Object.keys(overrides).filter((key) => !skills.some((s) => s.key === key));
+		const held = heldSkills(this.settings, skills);
 		if (!skills.length && !missing.length) return;
 
 		new Setting(containerEl)
 			.setName("Skills")
-			.setDesc("Each skill goes where its group goes. Choose custom to pick the folders for one skill.")
+			.setDesc(
+				"Each skill goes where its group goes. Choose custom to pick the folders for one skill. To keep skills out of a folder for good, turn that folder off or use a group set to only the selected folders: a custom choice follows renames made in Obsidian, not those made elsewhere.",
+			)
 			.setHeading();
 
 		for (const skill of skills) {
@@ -329,19 +339,33 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 			if (custom) this.targetCheckboxes(setting.descEl, custom, (routing) => (overrides[skill.key] = routing));
 		}
 
-		for (const key of missing)
-			new Setting(containerEl)
-				.setName(key)
-				.setDesc("Custom folders for a skill that is not found. They apply again if it comes back.")
-				.addExtraButton((button) =>
-					button
-						.setIcon("trash")
-						.setTooltip("Forget")
-						.onClick(async () => {
-							delete overrides[key];
-							await this.save(true);
-						}),
+		for (const key of missing) {
+			const waiting = skills.filter((s) => held.get(s.key) === key);
+			const setting = new Setting(containerEl).setName(key).setDesc(
+				[
+					"Custom folders for a skill that is not found. They apply again if it comes back.",
+					...(waiting.length ? [`New skills next to it are not linked until you choose: ${waiting.map((s) => s.name).join(", ")}.`] : []),
+				].join(" "),
+			);
+			// A skill renamed outside Obsidian shows up as a new skill: hand it the choice.
+			for (const skill of waiting)
+				setting.addButton((button) =>
+					button.setButtonText(`Use for ${skill.name}`).onClick(async () => {
+						overrides[skill.key] = overrides[key];
+						delete overrides[key];
+						await this.save(true);
+					}),
 				);
+			setting.addExtraButton((button) =>
+				button
+					.setIcon("trash")
+					.setTooltip("Forget")
+					.onClick(async () => {
+						delete overrides[key];
+						await this.save(true);
+					}),
+			);
+		}
 	}
 
 	private targetIds(): string[] {

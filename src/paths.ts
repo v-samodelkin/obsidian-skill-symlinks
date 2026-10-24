@@ -1,6 +1,6 @@
 import * as os from "os";
 import * as path from "path";
-import type { Env } from "./fsys.ts";
+import type { Env, FileSystem } from "./fsys.ts";
 
 export type Resolved = { path: string; error?: undefined } | { path?: undefined; error: string };
 
@@ -46,3 +46,10 @@ export const inside = (parent: string, child: string): boolean => {
 };
 
 export const toPosix = (p: string): string => p.split(path.sep).join("/");
+
+/** Key for a folder that is the same for every path reaching it, including through symlinks. */
+export const folderKey = (fs: Pick<FileSystem, "realpath">, dir: string): string => pathKey(fs.realpath(dir) ?? dir);
+
+/** Key for an entry in a folder, with the folder reached through any symlinks. */
+export const entryKey = (fs: Pick<FileSystem, "realpath">, p: string): string =>
+	pathKey(path.join(fs.realpath(path.dirname(p)) ?? path.dirname(p), path.basename(p)));

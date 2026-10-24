@@ -3,6 +3,10 @@ import { type Group, type Routing, type Target, defaultTargets, targetFor, uniqu
 
 export const SETTINGS_VERSION = 2;
 
+// Targets are stored under their own key from version 2 on. Version 1.0 reads only "targets" and
+// starts with none when it is missing, so it does nothing with newer settings instead of misreading them.
+const TARGETS_KEY = "agentFolders";
+
 export interface Settings {
 	version: number;
 	enabled: boolean;
@@ -86,12 +90,16 @@ function fromV1(raw: Raw): Settings {
 }
 
 function fromV2(raw: Raw): Settings {
+	// Unknown fields from a newer version survive a round trip: on the settings, targets and groups.
+	// Builds of 1.1.0 before its release stored targets as "targets".
+	const { [TARGETS_KEY]: stored, targets: early, ...rest } = raw;
 	const targets: Target[] = [];
-	for (const entry of list(raw.targets)) {
+	for (const entry of list(stored ?? early)) {
 		if (!isObject(entry) || typeof entry.path !== "string") continue;
 		const taken = targets.map((t) => t.id);
 		const id = typeof entry.id === "string" && entry.id && !taken.includes(entry.id) ? entry.id : uniqueId(entry.path, taken);
 		targets.push({
+			...entry,
 			id,
 			label: text(entry.label, entry.path),
 			kind: entry.kind === "claude" ? "claude" : "folder",
@@ -102,13 +110,12 @@ function fromV2(raw: Raw): Settings {
 	const groups = list(raw.groups)
 		.filter(isObject)
 		.filter((g) => typeof g.folder === "string")
-		.map((g) => ({ folder: g.folder as string, routing: routing(g.routing) }));
+		.map((g) => ({ ...g, folder: g.folder as string, routing: routing(g.routing) }));
 	const skillRouting = isObject(raw.skillRouting)
 		? Object.fromEntries(Object.entries(raw.skillRouting).map(([key, value]) => [key, routing(value)]))
 		: {};
 	return {
-		// Unknown keys from a newer version survive a round trip.
-		...raw,
+		...rest,
 		version: Math.max(SETTINGS_VERSION, typeof raw.version === "number" ? raw.version : 0),
 		enabled: flag(raw.enabled, false),
 		skillsFolder: text(raw.skillsFolder, ""),
@@ -121,10 +128,19 @@ function fromV2(raw: Raw): Settings {
 	};
 }
 
-/** Settings from saved data, and whether the saved data should be rewritten in the current format. */
+/** What is saved: the settings with targets under their storage key. */
+export function toData(settings: Settings): Record<string, unknown> {
+	const { targets, ...rest } = settings;
+	return { ...rest, [TARGETS_KEY]: targets };
+}
+
+/**
+ * Settings from saved data, and whether saving them would change the data. Older formats are converted
+ * in memory only; the plugin writes the current format with the first change or sync record.
+ */
 export function loadSettings(data: unknown): { settings: Settings; changed: boolean } {
 	// A fresh install links nothing until sync is turned on; a missing folder is skipped until it exists.
 	if (!isObject(data)) return { settings: defaultSettings(), changed: false };
 	const settings = data.version === undefined ? fromV1(data) : fromV2(data);
-	return { settings, changed: JSON.stringify(settings) !== JSON.stringify(data) };
+	return { settings, changed: JSON.stringify(toData(settings)) !== JSON.stringify(data) };
 }

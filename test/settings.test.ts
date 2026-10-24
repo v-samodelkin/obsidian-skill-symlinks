@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { buildSync } from "esbuild";
 import type { Settings } from "../src/data.ts";
+import type { Target } from "../src/model.ts";
 import type { Context, Op } from "../src/sync.ts";
 
 const require = createRequire(import.meta.url);
@@ -64,8 +65,11 @@ interface Row {
 	descEl: El;
 }
 
+// What the plugin saves: the settings with targets under their own key.
+type Stored = Omit<Settings, "targets"> & { agentFolders: Target[] };
+
 async function openSettings(vault: string, home: string, data: object) {
-	let saved = JSON.parse(JSON.stringify(data)) as Settings;
+	let saved = JSON.parse(JSON.stringify(data)) as Stored;
 	let rows: Row[] = [];
 	const control = (row: Row) => {
 		const c: Control & Record<string, unknown> = {
@@ -107,7 +111,7 @@ async function openSettings(vault: string, home: string, data: object) {
 	class HostPlugin {
 		app = { vault: { adapter: new Adapter(), on: () => undefined }, workspace: { onLayoutReady: (fn: () => void) => fn() } };
 		loadData() { return Promise.resolve(saved); }
-		saveData(value: Settings) { saved = JSON.parse(JSON.stringify(value)) as Settings; return Promise.resolve(); }
+		saveData(value: Stored) { saved = JSON.parse(JSON.stringify(value)) as Stored; return Promise.resolve(); }
 		addSettingTab(value: typeof tab) { tab = value; }
 		addCommand() {}
 		registerEvent() {}
@@ -165,7 +169,7 @@ test("settings add a suggested profile, create its skills folder and route one s
 	assert.match(ui.row("Claude Code").desc, /^Claude profile: ~[\\/]\.claude[\\/]skills$/);
 	assert.ok(ui.row("Suggested folders").heading);
 	await ui.button("Claude Code (work)", "Add")();
-	assert.deepEqual(ui.data().targets.at(-1), {
+	assert.deepEqual(ui.data().agentFolders.at(-1), {
 		id: "claude-work", label: "Claude Code (work)", kind: "claude", path: path.join("~", ".claude-work"), enabled: true,
 	});
 	assert.match(ui.row("Claude Code (work)").desc, /No skills folder yet/);
@@ -192,7 +196,33 @@ test("settings add a suggested profile, create its skills folder and route one s
 	);
 
 	await ui.button("Claude Code (work)", "trash")();
-	assert.deepEqual(ui.data().targets.map((t) => t.id), ["claude"]);
+	assert.deepEqual(ui.data().agentFolders.map((t) => t.id), ["claude"]);
 	assert.deepEqual(ui.data().skillRouting["skills/example"], { mode: "only", only: [] });
 	assert.ok(ui.rows().some((r) => r.name === "Claude Code (work)" && r.controls.some((c) => c.text === "Add")));
+});
+
+test("settings show folders reached through a symlink as one, and hand a lost custom choice to a renamed skill", async () => {
+	const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "skill-symlinks-settings-")));
+	const vault = path.join(tmp, "vault");
+	const home = path.join(tmp, "home");
+	fs.mkdirSync(path.join(vault, "skills/diary"), { recursive: true });
+	fs.writeFileSync(path.join(vault, "skills/diary/SKILL.md"), "");
+	fs.mkdirSync(path.join(home, ".agents/skills"), { recursive: true });
+	fs.mkdirSync(path.join(home, ".claude/projects"), { recursive: true });
+	fs.symlinkSync(path.join(home, ".agents/skills"), path.join(home, ".claude/skills"), "junction");
+	const ui = await openSettings(vault, home, {
+		version: 2, enabled: false, skillsFolder: "skills", requireSkillMd: true,
+		agentFolders: [
+			{ id: "agents", label: "Shared agent skills", kind: "folder", path: "~/.agents/skills", enabled: true },
+			{ id: "claude", label: "Claude Code", kind: "claude", path: "~/.claude", enabled: true },
+		],
+		groups: [{ folder: "", routing: { mode: "all", except: [] } }],
+		// The skill was renamed from journal to diary outside Obsidian.
+		skillRouting: { "skills/journal": { mode: "only", only: ["claude"] } },
+	});
+	assert.match(ui.row("Claude Code").desc, /Same folder as Shared agent skills/);
+	assert.match(ui.row("skills/journal").desc, /not linked until you choose: diary/);
+	await ui.button("skills/journal", "Use for diary")();
+	assert.deepEqual(ui.data().skillRouting, { "skills/diary": { mode: "only", only: ["claude"] } });
+	assert.equal(ui.rows().some((r) => r.name === "skills/journal"), false);
 });

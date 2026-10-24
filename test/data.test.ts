@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { test } from "node:test";
-import { SETTINGS_VERSION, defaultSettings, loadSettings } from "../src/data.ts";
+import { SETTINGS_VERSION, defaultSettings, loadSettings, toData } from "../src/data.ts";
 import { claudeLabel, resolveTarget, targetFor } from "../src/model.ts";
 import { apply, plan } from "../src/sync.ts";
 import { FakeFs, fakeEnv } from "./fakefs.ts";
@@ -95,7 +95,7 @@ test("1.0.x defaults fill in missing fields the way 1.0.x read them", () => {
 
 test("current settings round-trip unchanged, and broken entries are repaired", () => {
 	const migrated = loadSettings(structuredClone(v1)).settings;
-	const again = loadSettings(JSON.parse(JSON.stringify(migrated)));
+	const again = loadSettings(JSON.parse(JSON.stringify(toData(migrated))));
 	assert.equal(again.changed, false);
 	assert.deepEqual(again.settings, migrated);
 
@@ -124,6 +124,28 @@ test("current settings round-trip unchanged, and broken entries are repaired", (
 	]);
 	assert.deepEqual(settings.skillRouting, { "skills/y": { mode: "all", except: [] } });
 	assert.deepEqual((settings as unknown as Record<string, unknown>).futureSetting, { kept: true });
+});
+
+test("1.0.x finds no targets in the current format, so it changes nothing", () => {
+	const saved = toData(loadSettings(structuredClone(v1)).settings);
+	assert.equal("targets" in saved, false);
+	assert.equal((saved.agentFolders as unknown[]).length, 4);
+	// 1.0.x read its settings as { ...defaults, ...saved }, with no targets by default.
+	const asRead = { targets: [], ...saved };
+	assert.deepEqual(asRead.targets, []);
+	assert.deepEqual(loadSettings(saved).settings, loadSettings(structuredClone(v1)).settings);
+});
+
+test("unknown fields on targets and groups from a newer version survive a round trip", () => {
+	const data = {
+		version: 3,
+		agentFolders: [{ id: "a", label: "A", kind: "claude", path: "~/.claude", enabled: true, colour: "blue" }],
+		groups: [{ folder: "", routing: { mode: "all", except: [] }, note: "kept" }],
+	};
+	const saved = toData(loadSettings(structuredClone(data)).settings);
+	assert.equal(saved.version, 3);
+	assert.deepEqual(saved.agentFolders, data.agentFolders);
+	assert.deepEqual(saved.groups, data.groups);
 });
 
 test("new targets get readable ids and names", () => {
