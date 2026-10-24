@@ -16,3 +16,7 @@
 	font-size: var(--font-ui-smaller);
 	user-select: text;
 }
+
+.skill-symlinks-off {
+	color: var(--text-muted);
+}

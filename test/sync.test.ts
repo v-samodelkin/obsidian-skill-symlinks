@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, test } from "node:test";
+import { nodeFs } from "../src/fsys.ts";
 import { type SyncConfig, apply, collectManagedLinks, plan, planRemoval } from "../src/sync.ts";
 import { affectsConfiguredFolders, affectsSkillsFolder, followFolderRename } from "../src/rename.ts";
 
@@ -32,12 +33,12 @@ beforeEach(() => {
 		skillsFolder: "skills",
 		requireSkillMd: true,
 		targets: [
-			{ path: agent("claude"), enabled: true },
-			{ path: agent("codex"), enabled: true },
+			{ id: "claude", label: "Claude", kind: "folder", path: agent("claude"), enabled: true },
+			{ id: "codex", label: "Codex", kind: "folder", path: agent("codex"), enabled: true },
 		],
 		groups: [
-			{ folder: "", skip: [] },
-			{ folder: "claude-only", skip: [agent("codex")] },
+			{ folder: "", routing: { mode: "all", except: [] } },
+			{ folder: "claude-only", routing: { mode: "all", except: ["codex"] } },
 		],
 	};
 });
@@ -89,6 +90,8 @@ test("cleans up disabled targets, changed skills folder and on removal", () => {
 	cfg.targets[1].enabled = false;
 	sync();
 	assert.deepEqual(links("codex"), {});
+	// The plugin records its links after every sync, so links into the old skills folder stay ours.
+	cfg.managedLinks = collectManagedLinks(cfg);
 	skill("../other/x");
 	cfg.skillsFolder = "other";
 	sync();
@@ -99,7 +102,7 @@ test("cleans up disabled targets, changed skills folder and on removal", () => {
 
 test("skips missing targets", () => {
 	skill("a");
-	cfg.targets.push({ path: agent("missing"), enabled: true });
+	cfg.targets.push({ id: "missing", label: "Missing", kind: "folder", path: agent("missing"), enabled: true });
 	sync();
 	assert.equal(fs.existsSync(agent("missing")), false);
 });
@@ -200,7 +203,7 @@ test("follows group and group ancestor renames without changing exclusions", () 
 	fs.renameSync(path.join(vault(), "skills/claude-only"), path.join(vault(), "skills/private"));
 	assert.equal(followFolderRename(cfg, "skills/claude-only", "skills/private"), true);
 	sync();
-	assert.deepEqual(cfg.groups[1], { folder: "private", skip: [agent("codex")] });
+	assert.deepEqual(cfg.groups[1], { folder: "private", routing: { mode: "all", except: ["codex"] } });
 	assert.deepEqual(links("claude"), { b: "skills/private/b" });
 	assert.deepEqual(links("codex"), {});
 	cfg.groups[1].folder = "parent/private";
@@ -282,4 +285,35 @@ test("does not claim a sibling vault with the same path prefix", () => {
 	assert.equal(ops.filter((op) => op.kind === "remove").length, 0);
 	assert.deepEqual(collectManagedLinks(cfg), {});
 	assert.deepEqual(planRemoval(cfg), []);
+});
+
+test("names that differ only in case never fail to link, whatever the volume", () => {
+	skill("Lint");
+	skill("claude-only/lint");
+	const ignoresCase = nodeFs.ignoresCase(agent("claude"));
+	assert.equal(nodeFs.ignoresCase(tmp), ignoresCase);
+	const ops = plan(cfg);
+	assert.equal(ops.filter((op) => op.kind === "conflict").length, ignoresCase ? 1 : 0);
+	assert.deepEqual(apply(ops).failed, []);
+	assert.deepEqual(Object.keys(links("claude")).sort(), ignoresCase ? ["Lint"] : ["Lint", "lint"]);
+	assert.deepEqual(plan(cfg).filter((op) => op.kind !== "conflict"), []);
+});
+
+test("a case-only rename of a skill is relinked in one sync", () => {
+	skill("Review");
+	sync();
+	fs.renameSync(path.join(vault(), "skills/Review"), path.join(vault(), "skills/review"));
+	assert.deepEqual(sync().failed, []);
+	assert.deepEqual(links("claude"), { review: "skills/review" });
+	assert.deepEqual(plan(cfg), []);
+});
+
+test("two targets that reach one folder through a symlink share its links", () => {
+	skill("a");
+	fs.symlinkSync(agent("claude"), agent("claude-alias"), "junction");
+	cfg.targets.push({ id: "alias", label: "Alias", kind: "folder", path: agent("claude-alias"), enabled: true });
+	assert.deepEqual(sync().failed, []);
+	assert.deepEqual(plan(cfg), []);
+	cfg.targets[0].enabled = false;
+	assert.deepEqual(plan(cfg), []);
 });

@@ -6,7 +6,11 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { buildSync } from "esbuild";
-import type { Settings } from "../src/settings.ts";
+import type { Settings } from "../src/data.ts";
+import type { Target } from "../src/model.ts";
+
+// What the plugin saves: the settings with targets under their own key.
+type Stored = Omit<Settings, "targets"> & { agentFolders: Target[] };
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({
@@ -20,24 +24,29 @@ class Folder {
 }
 
 // Exercise the shipped plugin entry point with only Obsidian's host API stubbed.
-async function loadPlugin(vaultPath: string, data: Partial<Settings>) {
-	let saved = JSON.parse(JSON.stringify(data)) as Settings;
+async function loadPlugin(vaultPath: string, data: object) {
+	let saved = JSON.parse(JSON.stringify(data)) as Stored;
 	const events = new Map<string, (file: Folder, oldPath?: string) => void>();
+	const commands = new Map<string, () => void>();
 	class Adapter {
 		getBasePath() { return vaultPath; }
 	}
 	class HostPlugin {
 		app = {
-			vault: { adapter: new Adapter(), on: (name: string, fn: (file: Folder, oldPath?: string) => void) => events.set(name, fn) },
+			vault: {
+				adapter: new Adapter(),
+				configDir: ".obsidian",
+				on: (name: string, fn: (file: Folder, oldPath?: string) => void) => events.set(name, fn),
+			},
 			workspace: { onLayoutReady: (fn: () => void) => fn() },
 		};
 		loadData() { return Promise.resolve(saved); }
-		saveData(value: Settings) {
-			saved = JSON.parse(JSON.stringify(value)) as Settings;
+		saveData(value: Stored) {
+			saved = JSON.parse(JSON.stringify(value)) as Stored;
 			return Promise.resolve();
 		}
 		addSettingTab() {}
-		addCommand() {}
+		addCommand(command: { id: string; callback: () => void }) { commands.set(command.id, command.callback); }
 		registerEvent() {}
 	}
 	const host = {
@@ -47,7 +56,7 @@ async function loadPlugin(vaultPath: string, data: Partial<Settings>) {
 	};
 	const module = { exports: {} as { default: new () => { onload(): Promise<void>; settings: Settings } } };
 	runInNewContext(bundle, {
-		module, exports: module.exports, structuredClone,
+		module, exports: module.exports, structuredClone, process,
 		require: (name: string) => name === "obsidian" ? host : require(name) as unknown,
 	});
 	const plugin = new module.exports.default();
@@ -55,6 +64,7 @@ async function loadPlugin(vaultPath: string, data: Partial<Settings>) {
 	return {
 		plugin,
 		data: () => saved,
+		command: (id: string) => commands.get(id)!(),
 		rename: (oldPath: string, newPath: string) => {
 			fs.renameSync(path.join(vaultPath, oldPath), path.join(vaultPath, newPath));
 			events.get("rename")!(new Folder(newPath), oldPath);
@@ -102,4 +112,89 @@ test("folder settings follow renames while sync is off without creating links", 
 	host.rename("parent", "renamed");
 	assert.equal(host.data().skillsFolder, "renamed/skills");
 	assert.deepEqual(fs.readdirSync(target), []);
+});
+
+test("1.0.x settings are left as they are until something changes", async () => {
+	const { vault, data } = fixture(false);
+	const host = await loadPlugin(vault, data);
+	assert.deepEqual(host.data(), data);
+	assert.equal(host.plugin.settings.version, 2);
+});
+
+test("1.0.x settings are written in the current format with the first sync record, and existing links stay", async () => {
+	const { vault, target, data } = fixture();
+	fs.symlinkSync(path.join(vault, "parent/skills/example"), path.join(target, "example"), "junction");
+	const host = await loadPlugin(vault, data);
+	const saved = host.data();
+	assert.equal(saved.version, 2);
+	assert.deepEqual(saved.agentFolders.map((t) => [t.kind, t.path, t.enabled]), [["folder", target, true]]);
+	assert.deepEqual(saved.groups, [{ folder: "", routing: { mode: "all", except: [] } }]);
+	assert.equal(fs.realpathSync(path.join(target, "example")), path.join(vault, "parent/skills/example"));
+	const again = await loadPlugin(vault, saved);
+	assert.deepEqual(again.data(), saved);
+});
+
+test("per-skill routing sends a skill to one Claude Code profile only", async () => {
+	const { tmp, vault } = fixture();
+	for (const profile of ["profile-a", "profile-b"]) fs.mkdirSync(path.join(tmp, profile, "skills"), { recursive: true });
+	const host = await loadPlugin(vault, {
+		version: 2,
+		enabled: true,
+		skillsFolder: "parent/skills",
+		requireSkillMd: true,
+		targets: [
+			{ id: "a", label: "A", kind: "claude", path: path.join(tmp, "profile-a"), enabled: true },
+			{ id: "b", label: "B", kind: "claude", path: path.join(tmp, "profile-b"), enabled: true },
+		],
+		groups: [{ folder: "", routing: { mode: "all", except: [] } }],
+		skillRouting: { "parent/skills/example": { mode: "only", only: ["b"] } },
+	});
+	assert.deepEqual(fs.readdirSync(path.join(tmp, "profile-a/skills")), []);
+	assert.equal(fs.realpathSync(path.join(tmp, "profile-b/skills/example")), path.join(vault, "parent/skills/example"));
+	host.rename("parent/skills/example", "parent/skills/renamed");
+	assert.deepEqual(Object.keys(host.data().skillRouting), ["parent/skills/renamed"]);
+	assert.deepEqual(fs.readdirSync(path.join(tmp, "profile-a/skills")), []);
+	assert.equal(fs.realpathSync(path.join(tmp, "profile-b/skills/renamed")), path.join(vault, "parent/skills/renamed"));
+});
+
+const linksIn = (dir: string) =>
+	Object.fromEntries(fs.readdirSync(dir).map((name) => [name, fs.readlinkSync(path.join(dir, name))]));
+
+test("upgrading from 1.0 with a config folder above the skills folder still cleans up and removes links", async () => {
+	const { vault, target, data } = fixture();
+	const skills = path.join(vault, "parent/skills");
+	fs.mkdirSync(path.join(vault, "parent/.obsidian"));
+	fs.mkdirSync(path.join(skills, "old"));
+	fs.writeFileSync(path.join(skills, "old/SKILL.md"), "old");
+	// What 1.0.2 left: both skills linked and recorded.
+	const managedLinks: Record<string, string> = {};
+	for (const name of ["example", "old"]) {
+		fs.symlinkSync(path.join(skills, name), path.join(target, name), "junction");
+		managedLinks[path.join(target, name)] = path.join(skills, name);
+	}
+	// Then, outside Obsidian, one skill is deleted and the other renamed.
+	fs.rmSync(path.join(skills, "old"), { recursive: true });
+	fs.renameSync(path.join(skills, "example"), path.join(skills, "renamed"));
+	const host = await loadPlugin(vault, { ...data, managedLinks });
+	assert.deepEqual(linksIn(target), { renamed: path.join(skills, "renamed") });
+	assert.deepEqual(host.data().managedLinks, { [path.join(target, "renamed")]: path.join(skills, "renamed") });
+	host.command("remove-links");
+	assert.deepEqual(fs.readdirSync(target), []);
+});
+
+test("upgrading from 1.0 keeps a $ in a folder name literal", async () => {
+	const { tmp, vault, data } = fixture();
+	const odd = path.join(tmp, "$odd/skills");
+	fs.mkdirSync(odd, { recursive: true });
+	fs.symlinkSync(path.join(vault, "parent/skills/example"), path.join(odd, "example"), "junction");
+	fs.mkdirSync(path.join(vault, "parent/skills/fresh"));
+	fs.writeFileSync(path.join(vault, "parent/skills/fresh/SKILL.md"), "fresh");
+	const host = await loadPlugin(vault, { ...data, targets: [{ path: odd, enabled: true }] });
+	assert.deepEqual(linksIn(odd), {
+		example: path.join(vault, "parent/skills/example"),
+		fresh: path.join(vault, "parent/skills/fresh"),
+	});
+	assert.equal(host.data().agentFolders[0].path, odd.split("$").join("$$"));
+	host.command("remove-links");
+	assert.deepEqual(fs.readdirSync(odd), []);
 });
