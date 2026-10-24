@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { buildSync } from "esbuild";
-import type { Settings } from "../src/settings.ts";
+import type { Settings } from "../src/data.ts";
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({
@@ -20,7 +20,7 @@ class Folder {
 }
 
 // Exercise the shipped plugin entry point with only Obsidian's host API stubbed.
-async function loadPlugin(vaultPath: string, data: Partial<Settings>) {
+async function loadPlugin(vaultPath: string, data: object) {
 	let saved = JSON.parse(JSON.stringify(data)) as Settings;
 	const events = new Map<string, (file: Folder, oldPath?: string) => void>();
 	class Adapter {
@@ -47,7 +47,7 @@ async function loadPlugin(vaultPath: string, data: Partial<Settings>) {
 	};
 	const module = { exports: {} as { default: new () => { onload(): Promise<void>; settings: Settings } } };
 	runInNewContext(bundle, {
-		module, exports: module.exports, structuredClone,
+		module, exports: module.exports, structuredClone, process,
 		require: (name: string) => name === "obsidian" ? host : require(name) as unknown,
 	});
 	const plugin = new module.exports.default();
@@ -102,4 +102,40 @@ test("folder settings follow renames while sync is off without creating links", 
 	host.rename("parent", "renamed");
 	assert.equal(host.data().skillsFolder, "renamed/skills");
 	assert.deepEqual(fs.readdirSync(target), []);
+});
+
+test("1.0.x settings are rewritten once in the current format and existing links stay", async () => {
+	const { vault, target, data } = fixture();
+	fs.symlinkSync(path.join(vault, "parent/skills/example"), path.join(target, "example"), "junction");
+	const host = await loadPlugin(vault, data);
+	const saved = host.data();
+	assert.equal(saved.version, 2);
+	assert.deepEqual(saved.targets.map((t) => [t.kind, t.path, t.enabled]), [["folder", target, true]]);
+	assert.deepEqual(saved.groups, [{ folder: "", routing: { mode: "all", except: [] } }]);
+	assert.equal(fs.realpathSync(path.join(target, "example")), path.join(vault, "parent/skills/example"));
+	const again = await loadPlugin(vault, saved);
+	assert.deepEqual(again.data(), saved);
+});
+
+test("per-skill routing sends a skill to one Claude Code profile only", async () => {
+	const { tmp, vault } = fixture();
+	for (const profile of ["profile-a", "profile-b"]) fs.mkdirSync(path.join(tmp, profile, "skills"), { recursive: true });
+	const host = await loadPlugin(vault, {
+		version: 2,
+		enabled: true,
+		skillsFolder: "parent/skills",
+		requireSkillMd: true,
+		targets: [
+			{ id: "a", label: "A", kind: "claude", path: path.join(tmp, "profile-a"), enabled: true },
+			{ id: "b", label: "B", kind: "claude", path: path.join(tmp, "profile-b"), enabled: true },
+		],
+		groups: [{ folder: "", routing: { mode: "all", except: [] } }],
+		skillRouting: { "parent/skills/example": { mode: "only", only: ["b"] } },
+	});
+	assert.deepEqual(fs.readdirSync(path.join(tmp, "profile-a/skills")), []);
+	assert.equal(fs.realpathSync(path.join(tmp, "profile-b/skills/example")), path.join(vault, "parent/skills/example"));
+	host.rename("parent/skills/example", "parent/skills/renamed");
+	assert.deepEqual(Object.keys(host.data().skillRouting), ["parent/skills/renamed"]);
+	assert.deepEqual(fs.readdirSync(path.join(tmp, "profile-a/skills")), []);
+	assert.equal(fs.realpathSync(path.join(tmp, "profile-b/skills/renamed")), path.join(vault, "parent/skills/renamed"));
 });

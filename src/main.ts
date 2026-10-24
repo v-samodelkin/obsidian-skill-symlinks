@@ -1,21 +1,27 @@
 import { FileSystemAdapter, Notice, Plugin, TAbstractFile, TFolder, debounce } from "obsidian";
-import { affectsConfiguredFolders, followFolderRename } from "./rename";
-import { DEFAULT_SETTINGS, Settings, SkillSymlinksSettingTab } from "./settings";
-import { DEFAULT_TARGETS, Op, SyncConfig, Target, apply, collectManagedLinks, plan, planRemoval } from "./sync";
+import { type Settings, defaultSettings, loadSettings } from "./data.ts";
+import { type Target, resolveTarget } from "./model.ts";
+import { PreviewModal } from "./preview.ts";
+import { affectsConfiguredFolders, followFolderRename } from "./rename.ts";
+import { countSummary, noticeLines, previewSections } from "./report.ts";
+import { SkillSymlinksSettingTab } from "./settings.ts";
+import { type Context, type Op, type SyncConfig, apply, collectManagedLinks, nodeContext, plan, planRemoval } from "./sync.ts";
 
 export default class SkillSymlinksPlugin extends Plugin {
-	settings: Settings = DEFAULT_SETTINGS;
+	settings: Settings = defaultSettings();
+	ctx: Context = nodeContext();
 	private reportedConflicts = new Set<string>();
 	requestSync = debounce(() => this.sync(), 500, true);
 
 	async onload() {
-		const data = (await this.loadData()) as Partial<Settings> | null;
-		this.settings = { ...structuredClone(DEFAULT_SETTINGS), ...data };
-		// Nothing is linked until sync is turned on; a missing folder is skipped until it exists.
-		if (!data) this.settings.targets = DEFAULT_TARGETS.map((path) => ({ path, enabled: true }));
+		const { settings, changed } = loadSettings(await this.loadData());
+		this.settings = settings;
+		// Settings from 1.0.x are rewritten in the current format once; nothing on disk changes.
+		if (changed) await this.saveSettings();
 
 		this.addSettingTab(new SkillSymlinksSettingTab(this.app, this));
 		this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.sync(true) });
+		this.addCommand({ id: "preview", name: "Preview changes", callback: () => this.preview() });
 		this.addCommand({
 			id: "remove-links",
 			name: "Remove all links created by this plugin",
@@ -50,7 +56,29 @@ export default class SkillSymlinksPlugin extends Plugin {
 
 	plan(): Op[] {
 		const cfg = this.config();
-		return cfg ? plan(cfg) : [];
+		return cfg ? plan(cfg, this.ctx) : [];
+	}
+
+	/** Shows what a sync would change. Confirming applies it, turning sync on first when it is off. */
+	preview(onCancel?: () => void) {
+		const cfg = this.config();
+		if (!cfg) return;
+		const ops = plan(cfg, this.ctx);
+		const enabling = !this.settings.enabled;
+		new PreviewModal(this.app, {
+			title: enabling ? "Turn on sync" : "Preview changes",
+			summary: countSummary(ops),
+			sections: previewSections(ops, this.settings.targets, cfg.vaultPath, this.ctx.env.home),
+			confirmText: enabling ? "Turn on" : ops.some((op) => op.kind !== "conflict") ? "Apply" : undefined,
+			onConfirm: async () => {
+				if (enabling) {
+					this.settings.enabled = true;
+					await this.saveSettings();
+				}
+				this.sync(true);
+			},
+			onCancel,
+		}).open();
 	}
 
 	sync(verbose = false) {
@@ -63,7 +91,20 @@ export default class SkillSymlinksPlugin extends Plugin {
 
 	removeTarget(target: Target) {
 		const cfg = this.config();
-		if (cfg && this.settings.enabled) this.run(planRemoval(cfg, [target]), false);
+		if (cfg && this.settings.enabled) this.run(planRemoval(cfg, this.ctx, [target.id]), false);
+	}
+
+	/** Creates the skills folder inside an existing Claude Code config folder. */
+	createSkillsFolder(target: Target): boolean {
+		const resolved = resolveTarget(target, this.ctx.env);
+		if (resolved.error !== undefined) return false;
+		try {
+			this.ctx.fs.mkdir(resolved.path);
+			return true;
+		} catch (e) {
+			new Notice(`Skill Symlinks\nCould not create ${resolved.path}: ${e instanceof Error ? e.message : String(e)}`);
+			return false;
+		}
 	}
 
 	private removeLinks() {
@@ -71,14 +112,14 @@ export default class SkillSymlinksPlugin extends Plugin {
 		if (!cfg) return;
 		this.settings.enabled = false;
 		void this.saveSettings();
-		this.run(planRemoval(cfg), true);
+		this.run(planRemoval(cfg, this.ctx), true);
 	}
 
 	private run(ops: Op[], verbose: boolean) {
-		const { done, failed } = apply(ops);
+		const { done, failed } = apply(ops, this.ctx.fs);
 		const cfg = this.config();
 		if (cfg) {
-			const managed = collectManagedLinks(cfg);
+			const managed = collectManagedLinks(cfg, this.ctx);
 			if (JSON.stringify(managed) !== JSON.stringify(this.settings.managedLinks)) {
 				this.settings.managedLinks = managed;
 				void this.saveSettings();
@@ -87,12 +128,10 @@ export default class SkillSymlinksPlugin extends Plugin {
 		const conflicts = ops.filter((op) => op.kind === "conflict");
 		const fresh = verbose ? conflicts : conflicts.filter((op) => !this.reportedConflicts.has(op.link));
 		fresh.forEach((op) => this.reportedConflicts.add(op.link));
-		const lines = [
-			...done.map((op) => (op.kind === "create" ? `+ ${op.link}` : `− ${op.link}`)),
-			...fresh.map((op) => `skipped ${op.link}: ${op.kind === "conflict" ? op.reason : ""}`),
-			...failed.map(({ op, error }) => `failed ${op.link}: ${error}`),
-		];
-		if (lines.length || verbose) new Notice(`Skill Symlinks\n${lines.join("\n") || "Everything is in sync."}`);
+		const lines = noticeLines(done, fresh, failed, this.settings.targets, this.ctx.env.home);
+		// Problems stay on screen longer than a plain summary.
+		if (lines.length || verbose)
+			new Notice(`Skill Symlinks\n${lines.join("\n") || "Everything is in sync."}`, fresh.length || failed.length ? 15000 : undefined);
 	}
 
 	private inSkillsFolder(path: string): boolean {

@@ -1,9 +1,10 @@
 import * as path from "path";
-import type { Group } from "./sync";
+import type { Group, Routing } from "./model.ts";
 
 interface FolderSettings {
 	skillsFolder: string;
 	groups: Group[];
+	skillRouting?: Record<string, Routing>;
 }
 
 const movedPath = (value: string, oldPath: string, newPath: string): string =>
@@ -22,6 +23,16 @@ export function followFolderRename(settings: FolderSettings, oldPath: string, ne
 			group.folder = relative;
 			changed = true;
 		}
+	}
+	// Per-skill routing is keyed by the skill's vault path, so it follows the skill and its parents.
+	if (settings.skillRouting) {
+		const moved: Record<string, Routing> = {};
+		for (const [key, routing] of Object.entries(settings.skillRouting)) {
+			const next = movedPath(key, oldPath, newPath);
+			if (next !== key) changed = true;
+			moved[next] = routing;
+		}
+		settings.skillRouting = moved;
 	}
 	settings.skillsFolder = newRoot;
 	return changed;

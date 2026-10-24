@@ -32,12 +32,12 @@ beforeEach(() => {
 		skillsFolder: "skills",
 		requireSkillMd: true,
 		targets: [
-			{ path: agent("claude"), enabled: true },
-			{ path: agent("codex"), enabled: true },
+			{ id: "claude", label: "Claude", kind: "folder", path: agent("claude"), enabled: true },
+			{ id: "codex", label: "Codex", kind: "folder", path: agent("codex"), enabled: true },
 		],
 		groups: [
-			{ folder: "", skip: [] },
-			{ folder: "claude-only", skip: [agent("codex")] },
+			{ folder: "", routing: { mode: "all", except: [] } },
+			{ folder: "claude-only", routing: { mode: "all", except: ["codex"] } },
 		],
 	};
 });
@@ -99,7 +99,7 @@ test("cleans up disabled targets, changed skills folder and on removal", () => {
 
 test("skips missing targets", () => {
 	skill("a");
-	cfg.targets.push({ path: agent("missing"), enabled: true });
+	cfg.targets.push({ id: "missing", label: "Missing", kind: "folder", path: agent("missing"), enabled: true });
 	sync();
 	assert.equal(fs.existsSync(agent("missing")), false);
 });
@@ -200,7 +200,7 @@ test("follows group and group ancestor renames without changing exclusions", () 
 	fs.renameSync(path.join(vault(), "skills/claude-only"), path.join(vault(), "skills/private"));
 	assert.equal(followFolderRename(cfg, "skills/claude-only", "skills/private"), true);
 	sync();
-	assert.deepEqual(cfg.groups[1], { folder: "private", skip: [agent("codex")] });
+	assert.deepEqual(cfg.groups[1], { folder: "private", routing: { mode: "all", except: ["codex"] } });
 	assert.deepEqual(links("claude"), { b: "skills/private/b" });
 	assert.deepEqual(links("codex"), {});
 	cfg.groups[1].folder = "parent/private";
