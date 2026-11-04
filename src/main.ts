@@ -1,4 +1,6 @@
 import { FileSystemAdapter, Notice, Plugin, TAbstractFile, TFolder, debounce } from "obsidian";
+import { openEditor } from "./editor/obsidian.ts";
+import { readPreference, setLocalEditorEnabled } from "./editor/local.ts";
 import { type Settings, defaultSettings, loadSettings, toData } from "./data.ts";
 import { type Target, resolveTarget } from "./model.ts";
 import { PreviewModal } from "./preview.ts";
@@ -10,6 +12,15 @@ import { type Context, type Op, type SyncConfig, apply, collectManagedLinks, nod
 export default class SkillSymlinksPlugin extends Plugin {
 	settings: Settings = defaultSettings();
 	ctx: Context = nodeContext();
+	editorPaths = new Set<string>();
+	private editor: Awaited<ReturnType<typeof openEditor>> = null;
+	private saving: Promise<void> = Promise.resolve();
+	private settingTab: SkillSymlinksSettingTab | null = null;
+	private editorBusy = 0;
+	private deferredSync = false;
+	private deferredVerbose = false;
+	private deferredRemoval = false;
+	private editorGeneration = 0;
 	private reportedConflicts = new Set<string>();
 	requestSync = debounce(() => this.sync(), 500, true);
 
@@ -18,7 +29,8 @@ export default class SkillSymlinksPlugin extends Plugin {
 		// first change or sync record, so a device still on 1.0.x is not handed data it cannot read.
 		this.settings = loadSettings(await this.loadData()).settings;
 
-		this.addSettingTab(new SkillSymlinksSettingTab(this.app, this));
+		this.settingTab = new SkillSymlinksSettingTab(this.app, this);
+		this.addSettingTab(this.settingTab);
 		this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.sync(true) });
 		this.addCommand({ id: "preview", name: "Preview changes", callback: () => this.preview() });
 		this.addCommand({
@@ -28,6 +40,7 @@ export default class SkillSymlinksPlugin extends Plugin {
 		});
 
 		const onChange = (file: TAbstractFile, oldPath?: string) => {
+			if (this.editorPaths.has(file.path) || (oldPath && this.editorPaths.has(oldPath))) return;
 			if (oldPath && file instanceof TFolder && followFolderRename(this.settings, oldPath, file.path)) {
 				void this.saveSettings();
 				this.requestSync();
@@ -37,6 +50,7 @@ export default class SkillSymlinksPlugin extends Plugin {
 		};
 		this.app.workspace.onLayoutReady(() => {
 			this.sync();
+			void this.reloadEditor();
 			this.registerEvent(this.app.vault.on("create", onChange));
 			this.registerEvent(this.app.vault.on("delete", onChange));
 			this.registerEvent(this.app.vault.on("rename", onChange));
@@ -44,7 +58,47 @@ export default class SkillSymlinksPlugin extends Plugin {
 	}
 
 	async saveSettings() {
-		await this.saveData(toData(this.settings));
+		const snapshot = JSON.parse(JSON.stringify(toData(this.settings))) as Record<string, unknown>;
+		const next = this.saving.catch(() => undefined).then(() => this.saveData(snapshot));
+		this.saving = next;
+		await next;
+	}
+
+	onunload() { this.editorGeneration++; this.editor?.close(); this.editor = null; }
+
+	settingsChanged() { this.settingTab?.refresh(); }
+
+	async editorOperation<T>(work: () => Promise<T>): Promise<T> {
+		this.editorBusy++;
+		try { return await work(); }
+		finally {
+			this.editorBusy--;
+			if (!this.editorBusy) {
+				try {
+					if (this.deferredRemoval) { this.deferredRemoval = false; this.removeLinks(); }
+					if (this.deferredSync) { const verbose = this.deferredVerbose; this.deferredSync = this.deferredVerbose = false; this.sync(verbose); }
+				} catch { new Notice("Sync could not complete. Check the plugin preview in Obsidian."); }
+			}
+		}
+	}
+
+	localEditorEnabled(): boolean {
+		const cfg = this.config();
+		return !!cfg && !!readPreference(cfg.vaultPath)?.enabled;
+	}
+
+	async setLocalEditor(on: boolean) {
+		const cfg = this.config();
+		if (!cfg) return;
+		this.editor?.close(); this.editor = null;
+		setLocalEditorEnabled(cfg.vaultPath, on);
+		await this.reloadEditor();
+	}
+
+	private async reloadEditor() {
+		const generation = ++this.editorGeneration;
+		try { this.editor?.close(); this.editor = null; const editor = await openEditor(this); if (generation !== this.editorGeneration) editor?.close(); else this.editor = editor; }
+		catch { new Notice("Local editor could not start. Check this machine's local editor configuration."); }
 	}
 
 	config(): SyncConfig | null {
@@ -81,6 +135,7 @@ export default class SkillSymlinksPlugin extends Plugin {
 	}
 
 	sync(verbose = false) {
+		if (this.editorBusy) { this.deferredSync = true; this.deferredVerbose ||= verbose; return; }
 		if (!this.settings.enabled) {
 			if (verbose) new Notice("Sync is off. Turn it on in the plugin settings.");
 			return;
@@ -89,6 +144,7 @@ export default class SkillSymlinksPlugin extends Plugin {
 	}
 
 	removeTarget(target: Target) {
+		if (this.editorBusy) { this.deferredSync = true; return; }
 		const cfg = this.config();
 		if (cfg && this.settings.enabled) this.run(planRemoval(cfg, this.ctx, [target.id]), false);
 	}
@@ -107,6 +163,7 @@ export default class SkillSymlinksPlugin extends Plugin {
 	}
 
 	private removeLinks() {
+		if (this.editorBusy) { this.deferredRemoval = true; return; }
 		const cfg = this.config();
 		if (!cfg) return;
 		this.settings.enabled = false;

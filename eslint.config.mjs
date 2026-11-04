@@ -6,7 +6,7 @@ export default defineConfig([
 	...obsidianmd.configs.recommended,
 	{
 		languageOptions: {
-			parserOptions: { projectService: { allowDefaultProject: ["eslint.config.mjs", "esbuild.config.mjs"] } },
+			parserOptions: { projectService: { allowDefaultProject: ["eslint.config.mjs", "esbuild.config.mjs", "scripts/*.mjs"] } },
 		},
 	},
 	// node:test registers tests via returned promises that the runner awaits. Test vaults use the
