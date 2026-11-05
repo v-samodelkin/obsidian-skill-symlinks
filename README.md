@@ -55,10 +55,33 @@ This plugin creates and deletes symlinks **outside your vault**.
 - Everything else is left alone and reported with the reason when it is in the way: links into a vault nested inside this one (a folder with its own `.obsidian` folder, other than the skills folder, a group folder or a folder above them), other links into this vault (such as `project-notes` pointing at a notes folder), live links to a copied vault, links repointed elsewhere, links that reach a skill through another link, untracked broken links, and real folders and files. A folder that cannot be read is reported and left unchanged.
 - On a volume that ignores letter case (the default on macOS and Windows), two skills whose names differ only in case are reported as a clash instead of failing, and the one already linked keeps its link.
 - Removing a folder from the list, or changing its path, removes the links this vault recorded there on the next sync. This cleanup waits while any folder path has an unset variable.
-- It never deletes or moves files, in the vault or elsewhere. The only folder it creates is a profile's `skills` folder, when you click **Create skills folder**.
+- Normal sync never deletes or moves source files. It creates a profile's `skills` folder only when you click **Create skills folder**. The optional local editor below can create, save, rename and trash files inside an admitted skill folder.
 - **Remove all links created by this plugin** in the command palette removes its links and turns sync off. Run it before uninstalling.
 
 Desktop only. On Windows the links are directory junctions, which need no admin rights.
+
+## Optional local editor API
+
+The API is off by default. Enable **Local editor API** in this vault's plugin settings on the desktop, or run this command from the plugin source checkout:
+
+```sh
+npm run local-editor -- enable /path/to/vault
+npm run local-editor -- disable /path/to/vault
+```
+
+After CLI enrollment or installing an updated build, reload Skill Symlinks in Obsidian yourself to activate it. Disabling enrollment revokes subsequent requests immediately. Enrollment is per vault and per machine; it is not a synced plugin setting.
+
+The plugin listens on an ephemeral `127.0.0.1` port and accepts only authenticated `POST /v1/editor` JSON commands. Discovery is in `~/.config/skill-symlinks/editor/<vault-hash>.json`, outside the vault, in a private directory with a `0600` file. Treat its bearer token as a secret: never send it to a browser, remote server, log or repository. The token rotates when the API starts and whenever enrollment changes. Browser origins, browser fetch metadata and a foreign Host are refused; there is no CORS or public MCP endpoint. Headers, bodies, time and concurrent requests are bounded.
+
+`src/editor/protocol.ts` defines the command and response shapes. `catalog`, `tree` and `read` use opaque bundle/file IDs; no command accepts an arbitrary absolute source path. Catalog entries include the vault-relative `entryPath` for opening `SKILL.md`. The editor refuses linked vaults, symlinks, hard-linked files, nested vaults, hidden/generated directories and configured roots that escape the skills folder. A tree has at most 1,500 entries and 16 levels; text is limited to 256 KiB and assets to 512 KiB. Scripts remain text and are never run. SVG is returned as text, not an active preview.
+
+`save` changes the current file through Obsidian's `Vault.process`, checks its expected byte revision, and preserves an existing UTF-8 BOM. Create, rename and trash use the Vault API. Editor bundles require `SKILL.md`, even if normal sync accepts folders without it. The root `SKILL.md` cannot be renamed or trashed. File content is not written into plugin settings or API logs. Trash always uses recoverable trash rather than permanent deletion.
+
+Mutations require a unique operation ID and short deadline. File and routing changes also check an expected revision; Undo checks its operation-specific token and current postconditions. Retries with the same ID and payload return the recorded outcome, including failures whose write outcome is uncertain. Used IDs remain reserved for the plugin session; full results expire after ten minutes or when their combined size exceeds 8 MiB. The session refuses new mutations after 1,024 IDs rather than replaying an evicted operation. Reloading the plugin resets this memory, so reconcile current revisions before retrying across a reload. Undo is conditional, single-use, and limited to 32 operations / 8 MiB: it never restores over a newer file, an occupied path or a changed routing choice.
+
+Connections preserve the plugin's per-skill snapshot policy and combine aliases that reach one target folder. Global sync is never enabled by an API command. A routing choice is saved before any link is changed; only links belonging to the selected source are applied or removed. Responses include observed connections and a fixed warning when persistence, expiry or a link conflict leaves a partial result. A saved routing choice can be applied by a later normal sync. API-owned source events suppress only their exact paths; normal external events retain normal sync behavior.
+
+The test suite exercises synthetic temporary vaults and HTTP clients. Installing/reloading the plugin and checking a real Obsidian session are separate manual verification steps.
 
 ## Upgrading from 1.0
 
