@@ -293,8 +293,11 @@ test("upload refuses a wrong magic, a bad name, a used name, a stale revision an
 test("an upload's Undo keeps no command or image bytes alive", async (t) => {
 	setFlagsFromString("--expose-gc"); const gc = runInNewContext("gc") as () => void;
 	const f = fixture(t), tr = await f.tree(), tick = () => new Promise((resolve) => setImmediate(resolve));
+	const create = f.host.create.bind(f.host); let bytes: WeakRef<Uint8Array> | undefined;
+	f.host.create = async (name, data) => { bytes = new WeakRef(data); await create(name, data); };
 	let command: Record<string, unknown> | null = f.mutation({ action: "upload", bundleId: tr.bundleId, parentId: tr.rootId, name: "a.png", data: png(1024 * 1024).toString("base64"), expectedRevision: tr.revision });
-	const ref = new WeakRef(command); assert.equal((await f.core.run(command)).status, 200); command = null;
+	const ref = new WeakRef(command), r = await f.core.run(command); assert.equal(r.status, 200); command = null;
 	await tick(); gc(); await tick(); gc();
-	assert.equal(ref.deref(), undefined);
+	assert.equal(ref.deref(), undefined); assert.equal(bytes!.deref(), undefined);
+	assert.equal((await f.core.run(f.mutation({ action: "undo", undoId: (r.body.result as EditorMutation).undoId }))).status, 200);
 });
