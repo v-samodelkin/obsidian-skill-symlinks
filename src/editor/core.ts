@@ -226,6 +226,16 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 		while (undos.size > 32 || undoBytes > 8 * 1024 * 1024) { const first = undos.entries().next().value; if (!first) break; undoBytes -= first[1].bytes; undos.delete(first[0]); }
 		return key;
 	}
+	/** Built outside execute, so the Undo keeps no command or upload bytes alive. */
+	function createdUndo(b: Bundle, relative: string, dest: string, kind: "file" | "folder", created: string): Undo {
+		const createdId = fileId(b, relative), afterStamp = stamp(path.join(b.root, relative));
+		return { bytes: 0, async run(undo) {
+			current(b); const e = entry(b, createdId, kind); checkRevision(stamp(path.join(b.root, relative)), afterStamp);
+			if (kind === "folder") { if (children(path.join(b.root, relative)).length) deny(409, "changed", "This folder is no longer empty. Its contents were kept."); }
+			else checkRevision(hash(await bytes(b, e)), created);
+			current(b); deadline(undo); checkRevision(stamp(path.join(b.root, relative)), afterStamp); await host.owned([dest], () => host.trash(dest));
+		} };
+	}
 	const routingValue = (b: Bundle) => JSON.stringify(host.settings().skillRouting[b.skill.key]);
 	function putRouting(b: Bundle, value: Routing | undefined) { if (value) host.settings().skillRouting[b.skill.key] = structuredClone(value); else delete host.settings().skillRouting[b.skill.key]; }
 	async function routeChange(b: Bundle, next: Routing | undefined, c: EditorCommand): Promise<Pick<EditorMutation, "warning" | "catalog">> {
@@ -305,14 +315,8 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 			const dest = destination(b, relative);
 			const kind = c.action === "upload" ? "file" : c.kind!, data = c.action === "upload" ? imageData(c.name!, c.data!) : new Uint8Array(), created = hash(data); deadline(c);
 			await host.owned([dest], () => kind === "folder" ? host.mkdir(dest) : host.create(dest, data));
-			const createdId = fileId(b, relative), afterStamp = stamp(path.join(b.root, relative));
-			if (kind === "file") nextFile = createdId;
-			undoId = remember({ bytes: 0, async run(undo) {
-				current(b); const e = entry(b, createdId, kind); checkRevision(stamp(path.join(b.root, relative)), afterStamp);
-				if (kind === "folder") { if (children(path.join(b.root, relative)).length) deny(409, "changed", "This folder is no longer empty. Its contents were kept."); }
-				else checkRevision(hash(await bytes(b, e)), created);
-				current(b); deadline(undo); checkRevision(stamp(path.join(b.root, relative)), afterStamp); await host.owned([dest], () => host.trash(dest));
-			} });
+			if (kind === "file") nextFile = fileId(b, relative);
+			undoId = remember(createdUndo(b, relative, dest, kind, created));
 		} else if (c.action === "rename") {
 			checkRevision(tree(b).revision, c.expectedRevision); const e = entry(b, c.fileId!, "file");
 			if (e.path.toLowerCase() === "skill.md") return deny(403, "entry-file", "SKILL.md is the skill entry file and keeps its name");

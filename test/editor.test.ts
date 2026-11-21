@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { test, type TestContext } from "node:test";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { defaultSettings } from "../src/data.ts";
 import { nodeContext } from "../src/sync.ts";
 import { createEditorCore, type EditorHost } from "../src/editor/core.ts";
@@ -286,4 +288,13 @@ test("upload refuses a wrong magic, a bad name, a used name, a stale revision an
 	const used = await upload("a.webp", webp, (await f.tree()).revision); assert.equal(used.status, 409); assert.equal(used.body.reason, "name-used");
 	const stale = await upload("c.png"); assert.equal(stale.status, 409); assert.equal(stale.body.reason, "changed");
 	assert.deepEqual(fs.readdirSync(f.source).sort(), ["SKILL.md", "a.webp", "b.jpeg", "note.md"]);
+});
+
+test("an upload's Undo keeps no command or image bytes alive", async (t) => {
+	setFlagsFromString("--expose-gc"); const gc = runInNewContext("gc") as () => void;
+	const f = fixture(t), tr = await f.tree(), tick = () => new Promise((resolve) => setImmediate(resolve));
+	let command: Record<string, unknown> | null = f.mutation({ action: "upload", bundleId: tr.bundleId, parentId: tr.rootId, name: "a.png", data: png(1024 * 1024).toString("base64"), expectedRevision: tr.revision });
+	const ref = new WeakRef(command); assert.equal((await f.core.run(command)).status, 200); command = null;
+	await tick(); gc(); await tick(); gc();
+	assert.equal(ref.deref(), undefined);
 });
