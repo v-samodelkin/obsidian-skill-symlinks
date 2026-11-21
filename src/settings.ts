@@ -51,8 +51,6 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		if (redraw) this.display();
 	}
 
-	refresh() { if (this.containerEl?.isConnected && this.containerEl.childElementCount) this.display(); }
-
 	// Edits are applied when the settings window closes, so half-typed paths never touch the disk.
 	hide() {
 		this.plugin.sync();
@@ -107,11 +105,6 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 					await this.save();
 				}),
 			);
-
-		new Setting(containerEl)
-			.setName("Local editor API")
-			.setDesc("Allow an authenticated editor on this computer to read and edit skill folders. Access is off by default, stays on this machine, and is never exposed to the network.")
-			.addToggle((toggle) => toggle.setValue(this.plugin.localEditorEnabled()).onChange(async (on) => { await this.plugin.setLocalEditor(on); }));
 
 		this.displayTargets(containerEl);
 		this.displaySuggestions(containerEl);
@@ -296,7 +289,7 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 							await this.save(true);
 						}),
 				);
-			this.targetCheckboxes(setting.descEl, () => group.routing, (routing) => (group.routing = routing));
+			this.targetCheckboxes(setting.descEl, group.routing, (routing) => (group.routing = routing));
 		}
 
 		new Setting(containerEl).addButton((button) =>
@@ -335,12 +328,12 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 							if (value === "custom") {
 								// Start from where the skill goes now; later targets are not added to it.
 								const now = effectiveRouting(this.settings, skill);
-								this.settings.skillRouting[skill.key] = { mode: "only", only: this.targetIds().filter((id) => routes(now, id)) };
-							} else delete this.settings.skillRouting[skill.key];
+								overrides[skill.key] = { mode: "only", only: this.targetIds().filter((id) => routes(now, id)) };
+							} else delete overrides[skill.key];
 							await this.save(true);
 						}),
 				);
-			if (custom) this.targetCheckboxes(setting.descEl, () => this.settings.skillRouting[skill.key] ?? effectiveRouting(this.settings, skill), (routing) => (this.settings.skillRouting[skill.key] = routing));
+			if (custom) this.targetCheckboxes(setting.descEl, custom, (routing) => (overrides[skill.key] = routing));
 		}
 
 		for (const key of missing) {
@@ -355,8 +348,8 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 			for (const skill of waiting)
 				setting.addButton((button) =>
 					button.setButtonText(`Use for ${skill.name}`).onClick(async () => {
-						this.settings.skillRouting[skill.key] = this.settings.skillRouting[key];
-						delete this.settings.skillRouting[key];
+						overrides[skill.key] = overrides[key];
+						delete overrides[key];
 						await this.save(true);
 					}),
 				);
@@ -365,7 +358,7 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 					.setIcon("trash")
 					.setTooltip("Forget")
 					.onClick(async () => {
-						delete this.settings.skillRouting[key];
+						delete overrides[key];
 						await this.save(true);
 					}),
 			);
@@ -376,15 +369,16 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 		return this.settings.targets.map((t) => t.id);
 	}
 
-	private targetCheckboxes(el: HTMLElement, routing: () => Routing, update: (routing: Routing) => void) {
+	private targetCheckboxes(el: HTMLElement, routing: Routing, update: (routing: Routing) => void) {
 		const list = el.createDiv({ cls: "skill-symlinks-targets" });
-		const current = routing;
+		let current = routing;
 		for (const target of this.settings.targets) {
 			const label = list.createEl("label", { cls: target.enabled ? undefined : "skill-symlinks-off" });
 			const checkbox = label.createEl("input", { type: "checkbox" });
-			checkbox.checked = routes(current(), target.id);
+			checkbox.checked = routes(current, target.id);
 			checkbox.onchange = async () => {
-				update(setRoute(current(), target.id, checkbox.checked));
+				current = setRoute(current, target.id, checkbox.checked);
+				update(current);
 				await this.save();
 			};
 			label.appendText(target.enabled ? target.label : `${target.label} (off)`);
