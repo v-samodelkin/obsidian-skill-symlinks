@@ -7,7 +7,7 @@ import { toData } from "../data.ts";
 import { type Routing, resolveTarget, routes } from "../model.ts";
 import { entryKey, folderKey, inside, samePath, toPosix } from "../paths.ts";
 import { effectiveRouting, heldSkills, listSkills, plan, type Context, type Skill, type SyncConfig } from "../sync.ts";
-import { ASSET_LIMIT, EDITOR_SCHEMA, TEXT_LIMIT, parseEditorCommand, type EditorBundle, type EditorCatalog, type EditorCommand, type EditorEntry, type EditorFile, type EditorMutation, type EditorReply, type EditorResult, type EditorTarget, type EditorTree } from "./protocol.ts";
+import { ASSET_LIMIT, EDITOR_SCHEMA, IMAGE_LIMIT, TEXT_LIMIT, parseEditorCommand, type EditorBundle, type EditorCatalog, type EditorCommand, type EditorEntry, type EditorFile, type EditorMutation, type EditorReply, type EditorResult, type EditorTarget, type EditorTree } from "./protocol.ts";
 
 export class EditorError extends Error {
 	readonly status: number;
@@ -35,6 +35,20 @@ const deny = (status: number, code: string, message: string): never => { throw n
 const ignored = new Set(["node_modules", "__pycache__", ".venv", "venv", "dist", "build", "coverage"]);
 const textExt = new Set([".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".py", ".sh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".svg", ".xml", ".csv", ".sql", ".ini", ".conf", ".mjs", ".cjs"]);
 const mimeOf = (name: string) => ({ ".md": "text/markdown", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" }[path.extname(name).toLowerCase()] ?? "text/plain");
+const image = (mime: string) => /^image\/(png|jpeg|gif|webp)$/.test(mime);
+const limit = (mime: string) => image(mime) ? IMAGE_LIMIT : ASSET_LIMIT;
+/** Decodes an upload and requires the magic bytes of the image type its name declares. */
+function imageData(name: string, value: string): Buffer {
+	const data = Buffer.from(value, "base64"), ascii = (from: number, to: number) => data.subarray(from, to).toString("latin1");
+	const matches = {
+		"image/png": data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+		"image/jpeg": data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff,
+		"image/gif": ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a",
+		"image/webp": ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP",
+	}[mimeOf(name)];
+	if (!matches || data.byteLength > IMAGE_LIMIT) deny(415, "unsupported-image", "This file is not a PNG, JPEG, GIF or WebP image that matches its name");
+	return data;
+}
 interface Bundle { skill: Skill; root: string; cfg: SyncConfig }
 interface Target { view: EditorTarget; ids: string[]; directory: string | null }
 interface Undo { bytes: number; run(command: EditorCommand): Promise<Pick<EditorMutation, "warning" | "catalog"> | void> }
@@ -140,13 +154,13 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 	}
 	const vaultPath = (b: Bundle, relative: string) => toPosix(path.relative(b.cfg.vaultPath, path.join(b.root, relative)));
 	async function bytes(b: Bundle, e: EditorEntry): Promise<Uint8Array> {
-		if (e.bytes === null || e.bytes > ASSET_LIMIT) return deny(413, "file-too-large", "This file is too large for the editor. Open it in Obsidian.");
+		if (e.bytes === null || e.bytes > limit(e.mime)) return deny(413, "file-too-large", "This file is too large for the editor. Open it in Obsidian.");
 		secure(b.cfg, path.join(b.root, e.path));
 		const before = stamp(path.join(b.root, e.path));
 		const data = await host.read(vaultPath(b, e.path));
 		secure(b.cfg, path.join(b.root, e.path));
 		checkRevision(stamp(path.join(b.root, e.path)), before);
-		if (data.byteLength > ASSET_LIMIT) return deny(413, "file-too-large", "This file is too large for the editor. Open it in Obsidian.");
+		if (data.byteLength > limit(e.mime)) return deny(413, "file-too-large", "This file is too large for the editor. Open it in Obsidian.");
 		return data;
 	}
 	function decode(data: Uint8Array): string { try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data); } catch { return deny(415, "binary-file", "This file can be viewed as an asset, not edited as text"); } }
@@ -155,7 +169,7 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 		const editable = e.editable && data.byteLength <= TEXT_LIMIT;
 		const result: EditorFile = { kind: "file", bundleId: id("bundle", b.skill.key), fileId: e.id, path: e.path, name: e.name, revision: hash(data), bytes: data.byteLength, mime: e.mime, editable };
 		if (editable) result.text = decode(data);
-		else if (/^image\/(png|jpeg|gif|webp)$/.test(e.mime)) result.data = Buffer.from(data).toString("base64");
+		else if (image(e.mime)) result.data = Buffer.from(data).toString("base64");
 		return result;
 	}
 	function targets(cfg: SyncConfig): Target[] {
@@ -284,18 +298,19 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 			undoId = remember({ bytes: Buffer.byteLength(before) + Buffer.byteLength(after), async run(undo) {
 				current(b); entry(b, e.id, "file"); await host.process(vaultPath(b, e.path), (actual) => { current(b); secure(b.cfg, path.join(b.root, e.path)); deadline(undo); checkRevision(stamp(path.join(b.root, e.path)), afterStamp); checkRevision(hash(actual), hash(after)); return before; });
 			} }); nextFile = e.id;
-		} else if (c.action === "create") {
+		} else if (c.action === "create" || c.action === "upload") {
 			const t = tree(b); checkRevision(t.revision, c.expectedRevision);
 			const parent = c.parentId === t.rootId ? "" : entry(b, c.parentId!, "folder").path;
 			const relative = parent ? parent + "/" + c.name : c.name!;
+			const kind = c.action === "upload" ? "file" : c.kind!, data = c.action === "upload" ? imageData(c.name!, c.data!) : new Uint8Array(), created = hash(data);
 			const dest = destination(b, relative); deadline(c);
-			await host.owned([dest], () => c.kind === "folder" ? host.mkdir(dest) : host.create(dest, new Uint8Array()));
+			await host.owned([dest], () => kind === "folder" ? host.mkdir(dest) : host.create(dest, data));
 			const createdId = fileId(b, relative), afterStamp = stamp(path.join(b.root, relative));
-			if (c.kind === "file") nextFile = createdId;
+			if (kind === "file") nextFile = createdId;
 			undoId = remember({ bytes: 0, async run(undo) {
-				current(b); const e = entry(b, createdId, c.kind); checkRevision(stamp(path.join(b.root, relative)), afterStamp);
-				if (c.kind === "folder") { if (children(path.join(b.root, relative)).length) deny(409, "changed", "This folder is no longer empty. Its contents were kept."); }
-				else checkRevision(hash(await bytes(b, e)), hash(""));
+				current(b); const e = entry(b, createdId, kind); checkRevision(stamp(path.join(b.root, relative)), afterStamp);
+				if (kind === "folder") { if (children(path.join(b.root, relative)).length) deny(409, "changed", "This folder is no longer empty. Its contents were kept."); }
+				else checkRevision(hash(await bytes(b, e)), created);
 				current(b); deadline(undo); checkRevision(stamp(path.join(b.root, relative)), afterStamp); await host.owned([dest], () => host.trash(dest));
 			} });
 		} else if (c.action === "rename") {

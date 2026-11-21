@@ -2,7 +2,10 @@
 export const EDITOR_SCHEMA = 1 as const;
 export const TEXT_LIMIT = 256 * 1024;
 export const ASSET_LIMIT = 512 * 1024;
-export type EditorAction = "catalog" | "tree" | "read" | "save" | "create" | "rename" | "trash" | "connect" | "inherit" | "undo";
+/** PNG, JPEG, GIF and WebP images are read and uploaded up to this size; other assets keep ASSET_LIMIT. */
+export const IMAGE_LIMIT = 8 * 1024 * 1024;
+const IMAGE_DATA_LIMIT = 4 * Math.ceil(IMAGE_LIMIT / 3);
+export type EditorAction = "catalog" | "tree" | "read" | "save" | "create" | "upload" | "rename" | "trash" | "connect" | "inherit" | "undo";
 export interface EditorCommand {
 	action: EditorAction;
 	bundleId?: string;
@@ -12,6 +15,8 @@ export interface EditorCommand {
 	name?: string;
 	kind?: "file" | "folder";
 	text?: string;
+	/** Standard padded base64 of an uploaded image. */
+	data?: string;
 	enabled?: boolean;
 	expectedRevision?: string;
 	operationId?: string;
@@ -82,6 +87,7 @@ const fields: Record<EditorAction, string[]> = {
 	catalog: [], tree: ["bundleId"], read: ["bundleId", "fileId"],
 	save: ["bundleId", "fileId", "expectedRevision", "text", "operationId", "deadline"],
 	create: ["bundleId", "parentId", "name", "kind", "expectedRevision", "operationId", "deadline"],
+	upload: ["bundleId", "parentId", "name", "data", "expectedRevision", "operationId", "deadline"],
 	rename: ["bundleId", "fileId", "name", "expectedRevision", "operationId", "deadline"],
 	trash: ["bundleId", "fileId", "expectedRevision", "operationId", "deadline"],
 	connect: ["bundleId", "targetId", "enabled", "expectedRevision", "operationId", "deadline"],
@@ -104,9 +110,12 @@ export function parseEditorCommand(value: unknown): EditorCommand {
 			if (typeof v !== "boolean") throw new Error("Invalid editor command");
 		} else if (key === "text") {
 			if (typeof v !== "string" || new TextEncoder().encode(v).length > TEXT_LIMIT) throw new Error("File is too large");
+		} else if (key === "data") {
+			if (typeof v !== "string" || !v || v.length > IMAGE_DATA_LIMIT || v.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(v) || (v.length / 4) * 3 - (v.endsWith("==") ? 2 : v.endsWith("=") ? 1 : 0) > IMAGE_LIMIT) throw new Error("Invalid editor command");
 		} else if (typeof v !== "string" || !v || v.length > (key === "name" ? 512 : 96)) throw new Error("Invalid editor command");
 	}
 	if (raw.kind !== undefined && raw.kind !== "file" && raw.kind !== "folder") throw new Error("Invalid editor command");
+	if (action === "upload" && ((raw.name as string).includes("/") || !/\.(png|jpe?g|gif|webp)$/i.test(raw.name as string))) throw new Error("Invalid editor command");
 	if (raw.operationId !== undefined && (typeof raw.operationId !== "string" || !/^[a-zA-Z0-9_-]{16,80}$/.test(raw.operationId))) throw new Error("Invalid editor command");
 	return raw as unknown as EditorCommand;
 }

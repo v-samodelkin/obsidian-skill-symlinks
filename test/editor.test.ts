@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test";
 import { defaultSettings } from "../src/data.ts";
 import { nodeContext } from "../src/sync.ts";
 import { createEditorCore, type EditorHost } from "../src/editor/core.ts";
-import { parseEditorCommand, type EditorCatalog, type EditorFile, type EditorMutation, type EditorTree } from "../src/editor/protocol.ts";
+import { IMAGE_LIMIT, parseEditorCommand, type EditorCatalog, type EditorFile, type EditorMutation, type EditorTree } from "../src/editor/protocol.ts";
 
 function fixture(t: TestContext) {
 	const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "skills-editor-test-")));
@@ -231,4 +231,55 @@ test("catalog holds use the full normal census and absent groups are skipped", a
  const c = await f.catalog();
  assert.equal(c.bundles.length, 1);
  assert.equal(c.bundles[0].connections[0].state, "off", "a normal sibling is not a false routing orphan");
+});
+
+const png = (size: number) => { const data = Buffer.alloc(size, 7); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(data); return data; };
+
+test("images up to the image limit are read in full; other assets keep the asset limit", async (t) => {
+	const f = fixture(t), big = png(3 * 1024 * 1024);
+	fs.writeFileSync(path.join(f.source, "big.png"), big); fs.writeFileSync(path.join(f.source, "big.pdf"), Buffer.alloc(600 * 1024, 7)); fs.writeFileSync(path.join(f.source, "huge.png"), png(IMAGE_LIMIT + 1));
+	const file = await f.read("big.png"); assert.equal(file.mime, "image/png"); assert.equal(file.bytes, big.byteLength); assert.ok(Buffer.from(file.data!, "base64").equals(big));
+	const tr = await f.tree();
+	for (const name of ["big.pdf", "huge.png"]) {
+		const r = await f.core.run({ action: "read", bundleId: tr.bundleId, fileId: tr.entries.find((e) => e.path === name)!.id });
+		assert.equal(r.status, 413, name); assert.equal(r.body.reason, "file-too-large", name);
+	}
+});
+
+test("a trashed big image comes back with Undo", async (t) => {
+	const f = fixture(t), big = png(4 * 1000 * 1000); fs.writeFileSync(path.join(f.source, "big.png"), big);
+	const file = await f.read("big.png"), trashed = await f.core.run(f.mutation({ action: "trash", bundleId: file.bundleId, fileId: file.fileId, expectedRevision: file.revision }));
+	assert.equal(trashed.status, 200); assert.equal(fs.existsSync(path.join(f.source, "big.png")), false);
+	assert.equal((await f.core.run(f.mutation({ action: "undo", undoId: (trashed.body.result as EditorMutation).undoId }))).status, 200);
+	assert.ok(fs.readFileSync(path.join(f.source, "big.png")).equals(big));
+});
+
+test("upload adds an image into a skill folder, and Undo removes it only while unchanged", async (t) => {
+	const f = fixture(t); fs.mkdirSync(path.join(f.source, "shots")); let tr = await f.tree();
+	const parentId = tr.entries.find((e) => e.path === "shots")!.id, data = png(2 * 1024 * 1024);
+	const upload = (name: string, revision: string) => f.core.run(f.mutation({ action: "upload", bundleId: tr.bundleId, parentId, name, data: data.toString("base64"), expectedRevision: revision }));
+	const r = await upload("one.PNG", tr.revision); assert.equal(r.status, 200);
+	const result = r.body.result as EditorMutation; assert.ok(fs.readFileSync(path.join(f.source, "shots/one.PNG")).equals(data));
+	assert.equal(result.fileId, (await f.tree()).entries.find((e) => e.path === "shots/one.PNG")!.id);
+	assert.equal((await f.core.run(f.mutation({ action: "undo", undoId: result.undoId }))).status, 200);
+	assert.equal(fs.existsSync(path.join(f.source, "shots/one.PNG")), false);
+	tr = await f.tree(); const again = await upload("two.png", tr.revision); assert.equal(again.status, 200);
+	fs.writeFileSync(path.join(f.source, "shots/two.png"), png(10));
+	assert.equal((await f.core.run(f.mutation({ action: "undo", undoId: (again.body.result as EditorMutation).undoId }))).status, 409);
+	assert.equal(fs.readFileSync(path.join(f.source, "shots/two.png")).byteLength, 10);
+});
+
+test("upload refuses a wrong magic, a bad name, a used name, a stale revision and oversize data", async (t) => {
+	const f = fixture(t), tr = await f.tree(), good = png(64).toString("base64");
+	const upload = (name: string, data = good, revision = tr.revision) => f.core.run(f.mutation({ action: "upload", bundleId: tr.bundleId, parentId: tr.rootId, name, data, expectedRevision: revision }));
+	const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]).toString("base64"), webp = Buffer.from("RIFF\0\0\0\0WEBPVP8 ").toString("base64");
+	for (const [name, data] of [["a.png", jpeg], ["a.jpg", good], ["a.gif", Buffer.from("GIF88a....").toString("base64")], ["a.webp", Buffer.from("RIFF\0\0\0\0WEBQ").toString("base64")]]) {
+		const r = await upload(name, data); assert.equal(r.status, 415, name); assert.equal(r.body.reason, "unsupported-image", name);
+	}
+	for (const name of ["a.txt", "a.svg", "a.png.md", "shots/a.png", ".a.png", "../a.png"]) assert.equal((await upload(name)).status, 400, name);
+	for (const data of ["", "not base64!", "AAA", "A".repeat(4 * Math.ceil(IMAGE_LIMIT / 3) + 4), "A".repeat(4 * Math.ceil(IMAGE_LIMIT / 3))]) assert.equal((await upload("big.png", data)).status, 400, data.slice(0, 12));
+	assert.equal((await upload("a.webp", webp)).status, 200); assert.equal((await upload("b.jpeg", jpeg, (await f.tree()).revision)).status, 200);
+	const used = await upload("a.webp", webp, (await f.tree()).revision); assert.equal(used.status, 409); assert.equal(used.body.reason, "name-used");
+	const stale = await upload("c.png"); assert.equal(stale.status, 409); assert.equal(stale.body.reason, "changed");
+	assert.deepEqual(fs.readdirSync(f.source).sort(), ["SKILL.md", "a.webp", "b.jpeg", "note.md"]);
 });
