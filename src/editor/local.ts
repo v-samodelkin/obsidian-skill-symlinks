@@ -6,8 +6,10 @@ import * as path from "node:path";
 import { setTimeout, clearTimeout } from "node:timers";
 import type { createEditorCore } from "./core.ts";
 import { inside } from "../paths.ts";
-import { parseEditorCommand, type EditorCommand } from "./protocol.ts";
+import { IMAGE_LIMIT, parseEditorCommand, type EditorCommand } from "./protocol.ts";
 
+/** One image upload in base64 plus the command's other fields. */
+const BODY_LIMIT = 4 * Math.ceil(IMAGE_LIMIT / 3) + 768 * 1024;
 export interface LocalEditorPreference { schema: 1; vaultHash: string; enabled: boolean; token: string; port: number | null }
 export function vaultHash(vaultPath: string): string { return createHash("sha256").update(fs.realpathSync(vaultPath)).digest("hex"); }
 export function preferenceFile(vaultPath: string, home = os.homedir()): string {
@@ -88,7 +90,7 @@ export async function startLocalEditor(vaultPath: string, core: ReturnType<typeo
 			const chunks: Buffer[] = []; let size = 0;
 			for await (const chunk of req as AsyncIterable<Buffer>) {
 				size += chunk.length;
-				if (size > 768 * 1024) { send(res, 413, { error: "Request too large" }); req.destroy(); return; }
+				if (size > BODY_LIMIT) { send(res, 413, { error: "Request too large" }); req.destroy(); return; }
 				chunks.push(chunk);
 			}
 			try { command = parseEditorCommand(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { return send(res, 400, { error: "Invalid editor command" }); }

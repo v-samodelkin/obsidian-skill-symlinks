@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { request } from "node:http";
 import { test } from "node:test";
 import { createEditorCore } from "../src/editor/core.ts";
+import { IMAGE_LIMIT } from "../src/editor/protocol.ts";
 import { preferenceFile, readPreference, setLocalEditorEnabled, startLocalEditor } from "../src/editor/local.ts";
 
 test("machine-local enrollment is private, opt-in, and rejects linked discovery files", async (t) => {
@@ -38,7 +39,17 @@ test("loopback API rejects browser/foreign-host requests, rotates credentials an
 	assert.equal((await call({}, "{}", "GET")).status, 404);
 	assert.equal((await call({}, JSON.stringify({ action: "catalog", actor: "owner" }))).status, 400);
 	const good = await call(); assert.equal(good.status, 200); assert.equal(good.headers["cache-control"], "no-store"); assert.equal(good.headers["access-control-allow-origin"], undefined); assert.equal(calls, 1);
-	setLocalEditorEnabled(vault, false, home); assert.equal((await call()).status, 403); assert.equal(calls, 1);
+	const upload = (data: string) => JSON.stringify({ action: "upload", bundleId: "b", parentId: "p", name: "a.png", data, expectedRevision: "r", operationId: "upload-operation-1", deadline: Date.now() + 5000 });
+	assert.equal((await call({}, upload(Buffer.alloc(IMAGE_LIMIT).toString("base64")))).status, 200); assert.equal(calls, 2);
+	// The server answers 413 and drops the connection while the client still writes: the client may see either, and its
+	// socket can fail after the response ended, so this request has its own socket with its own error listener.
+	const over = await new Promise<number | string>((resolve) => {
+		const req = request({ hostname: "127.0.0.1", port: server.port, method: "POST", path: "/v1/editor", agent: false, headers: { Authorization: `Bearer ${active.token}`, "Content-Type": "application/json" } }, (res) => { res.on("error", () => undefined); res.resume(); resolve(res.statusCode!); });
+		req.on("socket", (socket) => socket.on("error", () => undefined));
+		req.on("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error")); req.end(upload("A".repeat(16 * 1024 * 1024)));
+	});
+	assert.ok([413, "EPIPE", "ECONNRESET"].includes(over), String(over)); assert.equal(calls, 2);
+	setLocalEditorEnabled(vault, false, home); assert.equal((await call()).status, 403); assert.equal(calls, 2);
 });
 
 test("a concurrent disable cannot be overwritten by an API server still starting", async (t) => {
