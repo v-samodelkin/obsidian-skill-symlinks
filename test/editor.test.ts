@@ -246,8 +246,12 @@ test("images up to the image limit are read in full; other assets keep the asset
 	}
 });
 
-test("a trashed big image comes back with Undo", async (t) => {
+test("a big image renames only to an image name, and a trashed one comes back with Undo", async (t) => {
 	const f = fixture(t), big = png(4 * 1000 * 1000); fs.writeFileSync(path.join(f.source, "big.png"), big);
+	const tr = await f.tree(), id = tr.entries.find((e) => e.path === "big.png")!.id;
+	assert.equal((await f.core.run(f.mutation({ action: "rename", bundleId: tr.bundleId, fileId: id, name: "big.bin", expectedRevision: tr.revision }))).status, 413);
+	const renamed = await f.core.run(f.mutation({ action: "rename", bundleId: tr.bundleId, fileId: id, name: "moved.png", expectedRevision: tr.revision }));
+	assert.equal(renamed.status, 200); assert.equal((await f.core.run(f.mutation({ action: "undo", undoId: (renamed.body.result as EditorMutation).undoId }))).status, 200);
 	const file = await f.read("big.png"), trashed = await f.core.run(f.mutation({ action: "trash", bundleId: file.bundleId, fileId: file.fileId, expectedRevision: file.revision }));
 	assert.equal(trashed.status, 200); assert.equal(fs.existsSync(path.join(f.source, "big.png")), false);
 	assert.equal((await f.core.run(f.mutation({ action: "undo", undoId: (trashed.body.result as EditorMutation).undoId }))).status, 200);
@@ -276,7 +280,7 @@ test("upload refuses a wrong magic, a bad name, a used name, a stale revision an
 	for (const [name, data] of [["a.png", jpeg], ["a.jpg", good], ["a.gif", Buffer.from("GIF88a....").toString("base64")], ["a.webp", Buffer.from("RIFF\0\0\0\0WEBQ").toString("base64")]]) {
 		const r = await upload(name, data); assert.equal(r.status, 415, name); assert.equal(r.body.reason, "unsupported-image", name);
 	}
-	for (const name of ["a.txt", "a.svg", "a.png.md", "shots/a.png", ".a.png", "../a.png"]) assert.equal((await upload(name)).status, 400, name);
+	for (const name of ["a.txt", "a.svg", "a.png.md", "shots/a.png", ".a.png", ".png", "../a.png"]) assert.equal((await upload(name)).status, 400, name);
 	for (const data of ["", "not base64!", "AAA", "A".repeat(4 * Math.ceil(IMAGE_LIMIT / 3) + 4), "A".repeat(4 * Math.ceil(IMAGE_LIMIT / 3))]) assert.equal((await upload("big.png", data)).status, 400, data.slice(0, 12));
 	assert.equal((await upload("a.webp", webp)).status, 200); assert.equal((await upload("b.jpeg", jpeg, (await f.tree()).revision)).status, 200);
 	const used = await upload("a.webp", webp, (await f.tree()).revision); assert.equal(used.status, 409); assert.equal(used.body.reason, "name-used");

@@ -302,8 +302,8 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 			const t = tree(b); checkRevision(t.revision, c.expectedRevision);
 			const parent = c.parentId === t.rootId ? "" : entry(b, c.parentId!, "folder").path;
 			const relative = parent ? parent + "/" + c.name : c.name!;
-			const kind = c.action === "upload" ? "file" : c.kind!, data = c.action === "upload" ? imageData(c.name!, c.data!) : new Uint8Array(), created = hash(data);
-			const dest = destination(b, relative); deadline(c);
+			const dest = destination(b, relative);
+			const kind = c.action === "upload" ? "file" : c.kind!, data = c.action === "upload" ? imageData(c.name!, c.data!) : new Uint8Array(), created = hash(data); deadline(c);
 			await host.owned([dest], () => kind === "folder" ? host.mkdir(dest) : host.create(dest, data));
 			const createdId = fileId(b, relative), afterStamp = stamp(path.join(b.root, relative));
 			if (kind === "file") nextFile = createdId;
@@ -316,6 +316,8 @@ export function createEditorCore(host: EditorHost, secret: string, now = () => D
 		} else if (c.action === "rename") {
 			checkRevision(tree(b).revision, c.expectedRevision); const e = entry(b, c.fileId!, "file");
 			if (e.path.toLowerCase() === "skill.md") return deny(403, "entry-file", "SKILL.md is the skill entry file and keeps its name");
+			// Undo reads the renamed file under its new name's limit.
+			if (e.bytes! > limit(mimeOf(c.name!))) return deny(413, "file-too-large", "This file is too large for the editor under that name. Open it in Obsidian.");
 			const contentHash = hash(await bytes(b, e)); current(b); checkRevision(tree(b).revision, c.expectedRevision);
 			const dest = destination(b, c.name!), old = vaultPath(b, e.path); deadline(c);
 			await host.owned([old, dest], () => host.rename(old, dest)); nextFile = fileId(b, c.name!);
