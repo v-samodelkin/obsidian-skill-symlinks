@@ -90,9 +90,17 @@ export function uniqueId(base: string, taken: Iterable<string>): string {
 }
 
 export const SHARED_AGENTS_PATH = "~/.agents/skills";
+export const ANTIGRAVITY_PATH = "~/.gemini/config/skills";
 export const CLAUDE_CONFIG_PATH = "~/.claude";
 
-// Codex, Cursor, Copilot, Gemini CLI, OpenCode and most other agents read ~/.agents/skills;
+// Skills folders that agents read on their own, suggested in settings when they exist. Codex, Cursor, Copilot,
+// Gemini CLI, OpenCode and most other agents read ~/.agents/skills; Antigravity's agent (agy, also inside
+// T3 Code) reads neither it nor Claude Code's folders, only ~/.gemini/config/skills.
+export const AGENT_FOLDERS = [
+	{ id: "agents", label: "Shared agent skills", path: SHARED_AGENTS_PATH },
+	{ id: "antigravity", label: "Antigravity", path: ANTIGRAVITY_PATH },
+] as const;
+
 // Claude Code reads only the skills folder of its config folder. Agents' own folders are left out:
 // linking there too lists skills twice.
 export const defaultTargets = (): Target[] => [
@@ -111,7 +119,7 @@ export function targetFor(value: string, kind: TargetKind | "auto", taken: strin
 		const id = config === CLAUDE_CONFIG_PATH ? uniqueId("claude", taken) : uniqueId(label.replace(/^Claude Code/, "claude"), taken);
 		return { id, label, kind: "claude", path: config, enabled: true };
 	}
-	if (p === SHARED_AGENTS_PATH)
-		return { id: uniqueId("agents", taken), label: "Shared agent skills", kind: "folder", path: p, enabled: true };
+	const known = AGENT_FOLDERS.find((f) => f.path === p);
+	if (known) return { id: uniqueId(known.id, taken), label: known.label, kind: "folder", path: p, enabled: true };
 	return { id: uniqueId(baseName(path.dirname(p)) || baseName(p), taken), label: p, kind: "folder", path: p, enabled: true };
 }

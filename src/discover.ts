@@ -1,6 +1,7 @@
-// Finds Claude Code config folders so settings can suggest them. Nothing is added automatically.
+// Finds Claude Code config folders and known agent skills folders so settings can suggest them.
+// Nothing is added automatically.
 import * as path from "path";
-import { type Target, claudeConfigOf } from "./model.ts";
+import { AGENT_FOLDERS, type Target, claudeConfigOf, resolveTarget } from "./model.ts";
 import { folderKey, literalPath, resolvePath } from "./paths.ts";
 import type { Context } from "./sync.ts";
 
@@ -45,4 +46,14 @@ export function findClaudeConfigs(ctx: Context): string[] {
 export const unlinkedClaudeConfigs = (ctx: Context, targets: Target[]): string[] => {
 	const linked = new Set(targets.flatMap((t) => claudeConfigOf(t, ctx.env) ?? []).map((p) => folderKey(ctx.fs, p)));
 	return findClaudeConfigs(ctx).filter((dir) => !linked.has(folderKey(ctx.fs, dir)));
+};
+
+/** Known agent skills folders that exist and that no target links into yet. */
+export const unlistedAgentFolders = (ctx: Context, targets: Target[]): (typeof AGENT_FOLDERS)[number][] => {
+	const { fs, env } = ctx;
+	const listed = new Set(targets.flatMap((t) => resolveTarget(t, env).path ?? []).map((p) => folderKey(fs, p)));
+	return AGENT_FOLDERS.filter((folder) => {
+		const dir = resolvePath(folder.path, env).path;
+		return dir !== undefined && fs.isDir(dir) && !listed.has(folderKey(fs, dir));
+	});
 };

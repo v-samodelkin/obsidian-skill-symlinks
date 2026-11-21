@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Suggested folders include Antigravity's `~/.gemini/config/skills` when it exists: Antigravity reads neither `~/.agents/skills` nor Claude Code's folders. Added from the suggestion, it is named **Antigravity**.
+
 ## 1.1.0
 
 ### Added

@@ -201,6 +201,29 @@ test("settings add a suggested profile, create its skills folder and route one s
 	assert.ok(ui.rows().some((r) => r.name === "Claude Code (work)" && r.controls.some((c) => c.text === "Add")));
 });
 
+test("settings suggest Antigravity's skills folder once it exists", async () => {
+	const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "skill-symlinks-settings-")));
+	const vault = path.join(tmp, "vault");
+	const home = path.join(tmp, "home");
+	fs.mkdirSync(path.join(vault, "skills"), { recursive: true });
+	fs.mkdirSync(path.join(home, ".agents/skills"), { recursive: true });
+	const data = {
+		version: 2, enabled: false, skillsFolder: "skills", requireSkillMd: true,
+		targets: [{ id: "agents", label: "Shared agent skills", kind: "folder", path: "~/.agents/skills", enabled: true }],
+		groups: [{ folder: "", routing: { mode: "all", except: [] } }],
+	};
+	assert.equal((await openSettings(vault, home, data)).rows().some((r) => r.name === "Antigravity"), false);
+
+	fs.mkdirSync(path.join(home, ".gemini/config/skills"), { recursive: true });
+	const ui = await openSettings(vault, home, data);
+	assert.equal(ui.row("Antigravity").desc, "Skills folder: ~/.gemini/config/skills");
+	await ui.button("Antigravity", "Add")();
+	assert.deepEqual(ui.data().agentFolders.at(-1), {
+		id: "antigravity", label: "Antigravity", kind: "folder", path: "~/.gemini/config/skills", enabled: true,
+	});
+	assert.equal(ui.rows().some((r) => r.name === "Antigravity" && r.controls.some((c) => c.text === "Add")), false);
+});
+
 test("settings show folders reached through a symlink as one, and hand a lost custom choice to a renamed skill", async () => {
 	const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "skill-symlinks-settings-")));
 	const vault = path.join(tmp, "vault");

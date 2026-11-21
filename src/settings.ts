@@ -1,13 +1,11 @@
 import { AbstractInputSuggest, App, Modal, PluginSettingTab, Setting, TFolder, normalizePath } from "obsidian";
 import type SkillSymlinksPlugin from "./main.ts";
-import { unlinkedClaudeConfigs } from "./discover.ts";
+import { unlinkedClaudeConfigs, unlistedAgentFolders } from "./discover.ts";
 import {
 	type Routing,
 	type Target,
 	type TargetKind,
-	SHARED_AGENTS_PATH,
 	claudeLabel,
-	defaultTargets,
 	forgetTarget,
 	resolveTarget,
 	routes,
@@ -206,17 +204,14 @@ export class SkillSymlinksSettingTab extends PluginSettingTab {
 
 	// Folders found on this computer that are not in the list. Nothing is added until the user asks.
 	private displaySuggestions(containerEl: HTMLElement) {
-		const { fs, env } = this.ctx;
+		const { env } = this.ctx;
 		// A found folder is stored as a literal path, so a "$" in its name is not read as a variable.
 		const suggestions: (Pick<Target, "label" | "path" | "kind"> & { where: string })[] = unlinkedClaudeConfigs(
 			this.ctx,
 			this.settings.targets,
 		).map((dir) => ({ label: claudeLabel(dir), path: literalPath(tildify(dir, env.home)), where: tildify(dir, env.home), kind: "claude" }));
-		const shared = defaultTargets().find((t) => t.path === SHARED_AGENTS_PATH)!;
-		const sharedDir = resolveTarget(shared, env).path;
-		const listed = new Set(this.settings.targets.flatMap((t) => resolveTarget(t, env).path ?? []).map((p) => folderKey(fs, p)));
-		if (sharedDir && fs.isDir(sharedDir) && !listed.has(folderKey(fs, sharedDir)))
-			suggestions.push({ label: shared.label, path: shared.path, where: shared.path, kind: "folder" });
+		for (const folder of unlistedAgentFolders(this.ctx, this.settings.targets))
+			suggestions.push({ label: folder.label, path: folder.path, where: folder.path, kind: "folder" });
 		const hidden = this.settings.hiddenSuggestions;
 		const shown = suggestions.filter((s) => !hidden.includes(s.path));
 		if (!shown.length && !hidden.length) return;

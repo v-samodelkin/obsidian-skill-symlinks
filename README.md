@@ -22,7 +22,7 @@ You can also install it with [BRAT](https://obsidian.md/plugins?id=obsidian42-br
   - a **skills folder** is linked into directly, such as `~/.agents/skills`.
 
   New installs start with `~/.agents/skills` and the `~/.claude` profile. Any folder can be edited or removed. Paths may start with `~` and use environment variables such as `$HOME` or `${XDG_CONFIG_HOME}`; write `$$` for a `$` that is part of a folder name. A missing folder is skipped until it exists. A folder whose variable is not set is skipped too, and sync reports it. Two entries that reach the same folder, also through a symlink (say `~/.claude/skills` linked to `~/.agents/skills`), share one set of links.
-- **Suggested folders.** Settings list Claude Code config folders found on this computer that are not in the list yet: `$CLAUDE_CONFIG_DIR`, `~/.claude`, `~/.claude-<name>`, and folders named like `claude` in `~/.config` or one level below it. Nothing is added until you click **Add**, and a suggestion can be dismissed.
+- **Suggested folders.** Settings list folders found on this computer that are not in the list yet: Claude Code config folders (`$CLAUDE_CONFIG_DIR`, `~/.claude`, `~/.claude-<name>`, and folders named like `claude` in `~/.config` or one level below it), `~/.agents/skills`, and Antigravity's `~/.gemini/config/skills`. Nothing is added until you click **Add**, and a suggestion can be dismissed.
 - **Groups.** A group is a folder inside the skills folder whose subfolders are skills; the top level is the skills folder itself. Each group goes to **all folders, including ones added later**, or to **only the selected folders**.
 - **Per-skill choice.** A skill goes where its group goes, unless you set it to **Custom** and pick its folders. The choice is kept by the skill's path. If a skill with a custom choice disappears, new skills in the same folder are not linked anywhere until you either hand them the choice (**Use for …**) or forget it in settings, because a rename made outside Obsidian looks like a new skill.
 - **Preview.** Turning sync on, the **Preview** button and the **Preview changes** command show every link that would be created or removed, grouped by folder, before anything is written. Edits in settings are applied when you close the settings, without a preview, so click **Preview** first to check them.
@@ -44,7 +44,7 @@ Links in profiles a skill no longer goes to are removed on the next sync. Obsidi
 
 ## Which agent folders
 
-Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and most other agents read `~/.agents/skills`. Claude Code reads only the `skills` folder of its config folder. Cursor and OpenCode read both, so they may list a skill twice. Add another folder only for an agent that reads neither: an agent that reads two linked folders lists each skill twice.
+Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and most other agents read `~/.agents/skills`. Claude Code reads only the `skills` folder of its config folder. Cursor and OpenCode read both, so they may list a skill twice. Antigravity reads neither: its agent (`agy`, also when T3 Code runs it) reads `~/.gemini/config/skills`, or `$GEMINI_HOME/config/skills` when that variable is set, so add that folder for it. Add another folder only for an agent that reads neither: an agent that reads two linked folders lists each skill twice.
 
 ## Safety
 
