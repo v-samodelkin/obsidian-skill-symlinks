@@ -41,9 +41,12 @@ test("loopback API rejects browser/foreign-host requests, rotates credentials an
 	const good = await call(); assert.equal(good.status, 200); assert.equal(good.headers["cache-control"], "no-store"); assert.equal(good.headers["access-control-allow-origin"], undefined); assert.equal(calls, 1);
 	const upload = (data: string) => JSON.stringify({ action: "upload", bundleId: "b", parentId: "p", name: "a.png", data, expectedRevision: "r", operationId: "upload-operation-1", deadline: Date.now() + 5000 });
 	assert.equal((await call({}, upload(Buffer.alloc(IMAGE_LIMIT).toString("base64")))).status, 200); assert.equal(calls, 2);
-	// The server answers 413 and drops the connection, so the client may see either while still writing.
-	const over = await call({}, upload("A".repeat(16 * 1024 * 1024))).then((r) => r.status, (error: NodeJS.ErrnoException) => error.code);
-	assert.ok([413, "EPIPE", "ECONNRESET"].includes(over!), String(over)); assert.equal(calls, 2);
+	// The server answers 413 and drops the connection, so the client may see either, and more than one error, while still writing.
+	const over = await new Promise<number | string>((resolve) => {
+		const req = request({ hostname: "127.0.0.1", port: server.port, method: "POST", path: "/v1/editor", headers: { Authorization: `Bearer ${active.token}`, "Content-Type": "application/json" } }, (res) => { res.on("error", () => undefined); res.resume(); resolve(res.statusCode!); });
+		req.on("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error")); req.end(upload("A".repeat(16 * 1024 * 1024)));
+	});
+	assert.ok([413, "EPIPE", "ECONNRESET"].includes(over), String(over)); assert.equal(calls, 2);
 	setLocalEditorEnabled(vault, false, home); assert.equal((await call()).status, 403); assert.equal(calls, 2);
 });
 
