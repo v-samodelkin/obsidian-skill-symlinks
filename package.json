@@ -8,7 +8,8 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
     "lint": "eslint .",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "local-editor": "node scripts/local-editor.mjs"
   },
   "license": "MIT",
   "devDependencies": {

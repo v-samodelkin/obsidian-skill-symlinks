@@ -54,7 +54,7 @@ async function loadPlugin(vaultPath: string, data: object) {
 		Notice: class {}, PluginSettingTab: class {}, Modal: class {}, AbstractInputSuggest: class {},
 		debounce: (fn: () => void) => fn,
 	};
-	const module = { exports: {} as { default: new () => { onload(): Promise<void>; settings: Settings } } };
+	const module = { exports: {} as { default: new () => { onload(): Promise<void>; saveSettings(): Promise<void>; saveData(value: Stored): Promise<void>; editorOperation<T>(work: () => Promise<T>): Promise<T>; editorPaths: Set<string>; settings: Settings } } };
 	runInNewContext(bundle, {
 		module, exports: module.exports, structuredClone, process,
 		require: (name: string) => name === "obsidian" ? host : require(name) as unknown,
@@ -65,9 +65,11 @@ async function loadPlugin(vaultPath: string, data: object) {
 		plugin,
 		data: () => saved,
 		command: (id: string) => commands.get(id)!(),
-		rename: (oldPath: string, newPath: string) => {
+		emit: (event: string, name: string) => events.get(event)!(new Folder(name)),
+		rename: async (oldPath: string, newPath: string) => {
 			fs.renameSync(path.join(vaultPath, oldPath), path.join(vaultPath, newPath));
 			events.get("rename")!(new Folder(newPath), oldPath);
+			await plugin.saveSettings();
 		},
 	};
 }
@@ -101,7 +103,7 @@ test("plugin startup records existing links and repairs them after reopening a m
 test("a parent rename event persists the new skills folder and updates links", async () => {
 	const { vault, target, data } = fixture();
 	const host = await loadPlugin(vault, data);
-	host.rename("parent", "renamed");
+	await host.rename("parent", "renamed");
 	assert.equal(host.data().skillsFolder, "renamed/skills");
 	assert.equal(fs.realpathSync(path.join(target, "example")), path.join(vault, "renamed/skills/example"));
 });
@@ -109,7 +111,7 @@ test("a parent rename event persists the new skills folder and updates links", a
 test("folder settings follow renames while sync is off without creating links", async () => {
 	const { vault, target, data } = fixture(false);
 	const host = await loadPlugin(vault, data);
-	host.rename("parent", "renamed");
+	await host.rename("parent", "renamed");
 	assert.equal(host.data().skillsFolder, "renamed/skills");
 	assert.deepEqual(fs.readdirSync(target), []);
 });
@@ -151,7 +153,7 @@ test("per-skill routing sends a skill to one Claude Code profile only", async ()
 	});
 	assert.deepEqual(fs.readdirSync(path.join(tmp, "profile-a/skills")), []);
 	assert.equal(fs.realpathSync(path.join(tmp, "profile-b/skills/example")), path.join(vault, "parent/skills/example"));
-	host.rename("parent/skills/example", "parent/skills/renamed");
+	await host.rename("parent/skills/example", "parent/skills/renamed");
 	assert.deepEqual(Object.keys(host.data().skillRouting), ["parent/skills/renamed"]);
 	assert.deepEqual(fs.readdirSync(path.join(tmp, "profile-a/skills")), []);
 	assert.equal(fs.realpathSync(path.join(tmp, "profile-b/skills/renamed")), path.join(vault, "parent/skills/renamed"));
@@ -159,6 +161,32 @@ test("per-skill routing sends a skill to one Claude Code profile only", async ()
 
 const linksIn = (dir: string) =>
 	Object.fromEntries(fs.readdirSync(dir).map((name) => [name, fs.readlinkSync(path.join(dir, name))]));
+
+test("only exact API-owned events suppress sync; external events wait for the editor transaction", async (t) => {
+	const { tmp, vault, target, data } = fixture(); t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	const host = await loadPlugin(vault, data), stale = path.join(target, "gone");
+	fs.symlinkSync(path.join(vault, "parent/skills/gone"), stale);
+	const name = "parent/skills/example/new.md";
+	host.plugin.editorPaths.add(name); host.emit("create", name); assert.ok(fs.lstatSync(stale).isSymbolicLink());
+	host.plugin.editorPaths.delete(name);
+	let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+	const operation = host.plugin.editorOperation(() => gate);
+	host.emit("create", "parent/skills/example/external.md"); assert.ok(fs.lstatSync(stale).isSymbolicLink());
+	release(); await operation; assert.throws(() => fs.lstatSync(stale), { code: "ENOENT" });
+});
+
+test("settings saves use immutable snapshots and reach the host sequentially", async (t) => {
+	const { tmp, vault, data } = fixture(false); t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	const host = await loadPlugin(vault, data), snapshots: Stored[] = [];
+	let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+	host.plugin.saveData = async (snapshot) => { snapshots.push(snapshot); if (snapshots.length === 1) await gate; };
+	const first = host.plugin.saveSettings();
+	host.plugin.settings.groups[0].routing = { mode: "only", only: [] };
+	const second = host.plugin.saveSettings(); await Promise.resolve(); await Promise.resolve();
+	assert.equal(snapshots.length, 1); assert.equal(snapshots[0].groups[0].routing.mode, "all");
+	release(); await first; await second;
+	assert.equal(snapshots.length, 2); assert.equal(snapshots[1].groups[0].routing.mode, "only");
+});
 
 test("upgrading from 1.0 with a config folder above the skills folder still cleans up and removes links", async () => {
 	const { vault, target, data } = fixture();

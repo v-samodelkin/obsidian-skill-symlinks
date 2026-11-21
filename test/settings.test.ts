@@ -124,7 +124,7 @@ async function openSettings(vault: string, home: string, data: object) {
 		Notice: class {}, Modal: class {}, AbstractInputSuggest: class {},
 		debounce: (fn: () => void) => fn, normalizePath: (p: string) => p,
 	};
-	const module = { exports: {} as { default: new () => { onload(): Promise<void>; ctx: Context; plan(): Op[] } } };
+	const module = { exports: {} as { default: new () => { onload(): Promise<void>; settings: Settings; ctx: Context; plan(): Op[] } } };
 	runInNewContext(prelude + bundle, {
 		module, exports: module.exports, structuredClone, process,
 		require: (name: string) => name === "obsidian" ? host : require(name) as unknown,
@@ -225,4 +225,19 @@ test("settings show folders reached through a symlink as one, and hand a lost cu
 	await ui.button("skills/journal", "Use for diary")();
 	assert.deepEqual(ui.data().skillRouting, { "skills/diary": { mode: "only", only: ["claude"] } });
 	assert.equal(ui.rows().some((r) => r.name === "skills/journal"), false);
+});
+
+test("an open routing checkbox patches current settings after an API change", async (t) => {
+	const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "skill-settings-stale-")));
+	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	const vault = path.join(tmp, "vault"), home = path.join(tmp, "home");
+	fs.mkdirSync(path.join(vault, "skills/example"), { recursive: true }); fs.writeFileSync(path.join(vault, "skills/example/SKILL.md"), "entry"); fs.mkdirSync(home);
+	const ui = await openSettings(vault, home, { version: 2, enabled: false, skillsFolder: "skills", requireSkillMd: true,
+		agentFolders: ["a", "b"].map((id) => ({ id, label: id.toUpperCase(), kind: "folder", path: path.join(tmp, id), enabled: true })),
+		groups: [{ folder: "", routing: { mode: "all", except: [] } }], skillRouting: { "skills/example": { mode: "only", only: ["a", "b"] } } });
+	const first = ui.row("example").descEl.children[0].children[0].children[0];
+	// The API replaced the routing entry while this checkbox was already on screen.
+	ui.plugin.settings.skillRouting = { "skills/example": { mode: "only", only: ["a"] } };
+	first.checked = false; await first.onchange!();
+	assert.deepEqual(ui.data().skillRouting["skills/example"], { mode: "only", only: [] });
 });
