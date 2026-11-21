@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { beforeEach, test } from "node:test";
-import { findClaudeConfigs, unlinkedClaudeConfigs } from "../src/discover.ts";
+import { findClaudeConfigs, unlinkedClaudeConfigs, unlistedAgentFolders } from "../src/discover.ts";
 import { type Target, type TargetKind, setMode, setRoute } from "../src/model.ts";
 import { literalPath, resolvePath } from "../src/paths.ts";
 import { followFolderRename } from "../src/rename.ts";
@@ -268,6 +268,17 @@ test("finds Claude Code config folders and suggests the ones not in the list", (
 		at(".config/claude"),
 		at(".config/some-tool/claude-home"),
 	]);
+});
+
+test("suggests the known agent skills folders that exist and no target reaches", () => {
+	const ids = (targets: Target[]) => unlistedAgentFolders(ctx, targets).map((f) => f.id);
+	assert.deepEqual(ids([]), ["agents"]);
+	fs.dir(at(".gemini/config/skills"));
+	assert.deepEqual(ids([]), ["agents", "antigravity"]);
+	assert.deepEqual(ids(cfg.targets), ["antigravity"]);
+	// A target that reaches the folder through a symlink lists it too.
+	fs.link(at(".antigravity-skills"), at(".gemini/config/skills"));
+	assert.deepEqual(ids([...cfg.targets, target("ag", "folder", "~/.antigravity-skills")]), []);
 });
 
 test("a config folder reached through a symlink is found once and counts as linked", () => {

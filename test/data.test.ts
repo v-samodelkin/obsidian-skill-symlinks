@@ -191,6 +191,13 @@ test("new targets get readable ids and names", () => {
 		path: "~/.my-agent/skills",
 		enabled: true,
 	});
+	assert.deepEqual(targetFor("~/.gemini/config/skills", "folder", ["antigravity"]), {
+		id: "antigravity-2",
+		label: "Antigravity",
+		kind: "folder",
+		path: "~/.gemini/config/skills",
+		enabled: true,
+	});
 	assert.equal(claudeLabel("/opt/profiles/claude-home"), "Claude Code (home)");
 	assert.equal(claudeLabel("${CLAUDE_CONFIG_DIR}"), "Claude Code (${CLAUDE_CONFIG_DIR})");
 });
